@@ -12,8 +12,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Initialize submodules
-        run: |
-          git submodule update --init --recursive --depth 1
+        run: git submodule update --init --recursive
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
