@@ -443,3 +443,4 @@ void main()
 			quad(0.0f, 0.0f, s.stroke_open_color, 0.85f);
 		}
 	}
+# v3.4g rebuild trigger
