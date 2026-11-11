@@ -2,6 +2,15 @@
 """Compile the actual inline GL code against a small stateful mock (not a driver test)."""
 import pathlib, re, subprocess, tempfile, json
 root = pathlib.Path(__file__).resolve().parents[1]
+fixture=json.loads((root/'tests/fixtures/f9-000005-selected.json').read_text())
+assert fixture['source_sha256']=='723d3fdb5a304436f6227d1e29c32abd986a14918576c634d02dda9272e1fd24'
+events={e['seq']:e for e in fixture['events']}
+assert events[45707]['event']=='marker' and events[45707]['context']==1
+assert events[45738]['world']==events[45740]['world'] and events[45738]['view_projection']==events[45740]['view_projection']
+assert events[68037]['world']==events[68040]['world'] and events[68037]['view_projection']==events[68040]['view_projection']
+assert (events[68037]['decision'],events[68040]['decision'])==('direct','hide_own')
+assert events[69236]['event']=='present_begin' and events[69236]['context']==1 and events[69239]['context']==3
+assert events[69239]['reason']=='no_observation' and events[264480]['reason']=='out_of_range'
 s = (root/'source/chams_gl.inl').read_text() + (root/'source/chams_overlay.inl').read_text()
 tokens = sorted(set(re.findall(r'\bGL_[A-Z0-9_]+\b', s)) - {'GL_TRUE','GL_FALSE'})
 names = sorted(set(re.findall(r'\bgl\.([A-Za-z0-9_]+)', s)))
@@ -131,6 +140,42 @@ int main(int argc, char **argv) {
  std::thread other([] { using namespace reshade::chams; assert(own().own_est<0 && own().stable==0);assert(pcache().count==0);own().own_est=7;own().stable=1;pcache().count=2; });
  other.join();assert(own().own_est==2.99280167f && own().stable==30 && pcache().count==1);
  g_opengl_context=nullptr;own()=own_track{};pcache().count=0;icache().count=0;
+ // F9 capture 000005 is a documented failure reproduction, NOT a fix test.
+ // The same shared-root candidate was direct at seq 45738/45740 while a
+ // different-origin part 45742 was hidden. No assertion about actual pixel
+ // ownership is made here; capture data alone cannot prove that association.
+ settings f9{}; f9.hide_own=true; f9.own_distance=5.30000019f;
+ program_info f9_info{}; f9_info.dist_source="_WorldSpaceCameraPos";
+ own_track f9_state{}; f9_state.own_est=@F9_EST@; f9_state.stable=60;
+ auto pending = [](const char *name, bool satisfied) {
+  std::printf("%s: %s\n", satisfied ? "XPASS (promote to regression)" : "XFAIL (known unfixed)", name);
+ };
+ const bool f9_body=own_distance_excludes(f9,f9_info,@F9_BODY@,f9_state);
+ const bool f9_part=own_distance_excludes(f9,f9_info,@F9_PART@,f9_state);
+ // This is conditional on the suspected association, not established ground truth.
+ pending("shared-root body and putative part get consistent decisions",f9_body==f9_part);
+ // Same-world/VP seq 68037/68040: the only decision input changed was
+ // the tracker estimate mid-group. Capture distance is approximately 2.964086.
+ f9_state.own_est=@F9_BEFORE@;const bool before=own_distance_excludes(f9,f9_info,@F9_BODY@,f9_state);
+ f9_state.own_est=@F9_AFTER@;const bool after=own_distance_excludes(f9,f9_info,@F9_BODY@,f9_state);
+ pending("identical shared-root draw unaffected by mid-group estimate update", before==after);
+ // Nearby-opponent negative is deliberately synthetic: the current
+ // distance-only predicate cannot differentiate equal-distance identities.
+ const bool synthetic_own=own_distance_excludes(f9,f9_info,2.9f,f9_state);
+ const bool synthetic_nearby_enemy=own_distance_excludes(f9,f9_info,2.9f,f9_state);
+ pending("hypothetical equal-distance nearby opponent stays visible", synthetic_own && !synthetic_nearby_enemy);
+ // Exact captured interval 69236/69239: an unrelated context's present
+ // increments the global epoch and the next game touch loses its estimate.
+ g_opengl_context=reinterpret_cast<void *>(3);g_frame_id=180;touch_frame();
+ own().own_est=@F9_RESET@;own().stable=48;own().frame_min=1e9f;
+ ++g_frame_id;touch_frame();
+ pending("unrelated-context present does not reset active game tracking",own().own_est>0 && own().stable==48);
+ // Exact partial interval 264475/264477/264480: nearer candidate follows
+ // a present but is not in the artificial interval's 5.164870 minimum.
+ own().own_est=@F9_ACQUIRED@;own().stable=30;own().frame_min=@F9_MIN@;
+ ++g_frame_id;touch_frame();
+ pending("unrelated present does not finalize an incomplete game interval",own().own_est>0 && own().stable==30);
+ g_opengl_context=nullptr;own()=own_track{};pcache().count=0;icache().count=0;
  // If a declared camera uniform has zero data, name the actual matrix fallback.
  p.view.plain=0;p.view_m[0]=p.view_m[5]=p.view_m[10]=1;p.view_m[12]=-2;
  p.loc_cam_pos=0;p.world[12]=5;assert(object_distance(p)==3);
@@ -225,6 +270,13 @@ int main(int argc, char **argv) {
  std::printf("MOCK BENCHMARK: off %.1f ns/draw, on %.1f ns/draw (not driver or in-game FPS)\n", double(off_ns)/iterations,double(on_ns)/iterations);
 }
 '''
+# Feed exact numeric values from preserved capture rows to the compiled tracker.
+for token, value in {
+ '@F9_EST@':events[45738]['own_est'], '@F9_BODY@':events[45738]['distance'],
+ '@F9_PART@':events[45742]['distance'], '@F9_BEFORE@':events[68039]['before_estimate'],
+ '@F9_AFTER@':events[68039]['estimate'], '@F9_RESET@':events[69239]['before_estimate'],
+ '@F9_ACQUIRED@':events[264480]['before_estimate'], '@F9_MIN@':events[264480]['frame_min'],
+}.items(): head=head.replace(token,repr(value)+'f')
 with tempfile.TemporaryDirectory() as d:
  p=pathlib.Path(d)/'mock.cpp';p.write_text(head);exe=pathlib.Path(d)/'test'
  subprocess.run(['g++','-std=c++17','-O0','-Wformat=2','-Werror=format',str(p),str(root/'source/chams_capture.cpp'),'-pthread','-o',str(exe)],check=True)

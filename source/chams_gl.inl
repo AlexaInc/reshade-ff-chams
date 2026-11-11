@@ -148,6 +148,16 @@ namespace reshade::chams
 	};
 	inline own_track &own() { static thread_local own_track o; return o; }
 
+	// Single definition of the legacy per-draw decision. Kept separate so
+	// capture-derived tests can expose its known limitations without claiming
+	// that a distance match establishes ownership.
+	inline bool own_distance_excludes(const settings &s, const program_info &p, float distance, const own_track &o)
+	{
+		return s.hide_own && std::strcmp(p.dist_source, "MATRIX_VP") != 0 && distance >= 0.0f &&
+			o.own_est > 0.0f && o.stable >= 30 && distance < s.own_distance &&
+			std::fabs(distance - o.own_est) <= 0.2f;
+	}
+
 	inline void update_own_estimate()
 	{
 		own_track &o = own();
@@ -953,8 +963,7 @@ namespace reshade::chams
 			(dist >= 0.0f && dist < g_settings.own_distance) ? 1 : 0, p.dist_source,
 			p.world[12], p.world[13], p.world[14], cam[0], cam[1], cam[2],
 			has_uniform ? 1 : 0, own().own_est, own().stable, g_settings.hide_own ? 1 : 0,
-			(g_settings.hide_own && std::strcmp(p.dist_source, "MATRIX_VP") != 0 && dist >= 0.0f && own().own_est > 0.0f && own().stable >= 30 &&
-			 dist < g_settings.own_distance && std::fabs(dist - own().own_est) <= 0.2f) ? 1 : 0,
+			own_distance_excludes(g_settings, p, dist, own()) ? 1 : 0,
 			g_settings.detect_mode, g_settings.render_mode, g_budget_left, character_token(program),
 			g_settings.own_distance, wall_hint ? 1 : 0, wall_bits, vp[0], vp[1], vp[2], vp[3],
 			screen_valid ? 1 : 0, screen[0], screen[1], array_buffer, element_buffer,
@@ -1490,22 +1499,12 @@ namespace reshade::chams
 		if (comparable_distance && dist > 0.0f && dist < own().frame_min)
 			own().frame_min = dist;
 
-		if (s.hide_own && comparable_distance && dist >= 0.0f)
+		if (own_distance_excludes(s, *info, dist, own()))
 		{
-			const own_track &o = own();
-			// Only hide when we are confident about the own-character distance
-			// (stable for many frames). Before that, render everything - better
-			// to briefly show my own model than to flicker enemies on and off.
-			const bool confident = o.own_est > 0.0f && o.stable >= 30;
-			const bool in_range   = dist < s.own_distance;
-			const bool at_my_dist = confident && std::fabs(dist - o.own_est) <= 0.2f;
-			if (in_range && at_my_dist)
-			{
-				if (diag != nullptr) ++diag->own_hidden;
-				if (cap) cap->decision = "hide_own";
-				real_draw();
-				return;
-			}
+			if (diag != nullptr) ++diag->own_hidden;
+			if (cap) cap->decision = "hide_own";
+			real_draw();
+			return;
 		}
 
 		// the "real clothes" modes draw the character even at strength 0
