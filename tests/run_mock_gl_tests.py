@@ -71,7 +71,8 @@ void *g_opengl_context=nullptr;
 head += '#include "'+str(root/'source/chams_gl.inl')+'"\n'
 head += r'''
 std::vector<std::string> captured_lines;
-namespace reshade::chams::capture { uintptr_t native_context(){ return 1; } uintptr_t native_surface(){ return 2; } }
+thread_local uintptr_t mock_native_context=0;
+namespace reshade::chams::capture { uintptr_t native_context(){ return mock_native_context ? mock_native_context : reinterpret_cast<uintptr_t>(g_opengl_context); } uintptr_t native_surface(){ return 2; } }
 namespace reshade::chams { settings g_settings; bool g_overlay_open=false; int g_budget_left=110; std::atomic<unsigned> g_frame_id{1}; void dump_line(const char *line){ captured_lines.emplace_back(line); } void ensure_loaded(){} }
 namespace reshade::log { void message(level,const char*,...){} }
 int main(int argc, char **argv) {
@@ -134,6 +135,24 @@ int main(int argc, char **argv) {
  own().own_est=3.15794563f;own().stable=30;pcache().count=1;icache().count=1;
  g_opengl_context=reinterpret_cast<void *>(2);touch_frame();
  assert(own().own_est<0 && own().stable==0 && pcache().count==0 && icache().count==0);
+ // The WGL implementation reuses the same device wrapper for contexts in
+ // a share group. A distinct native context is not a distinct wrapper pointer.
+ // A game draw must not inherit the previous native context's own estimate.
+ g_opengl_context=reinterpret_cast<void *>(0x8000);mock_native_context=0x1000;touch_frame();
+ own().own_est=2.74557114f;own().stable=48;pcache().count=1;icache().count=1;
+ touch_frame(); // no actual context change: preserve this context's state
+ assert(own().own_est>0 && own().stable==48 && pcache().count==1 && icache().count==1);
+ mock_native_context=0x2000;touch_frame();
+ assert(own().own_est<0 && own().stable==0 && pcache().count==0 && icache().count==0);
+ // Returning to the earlier native context is conservatively fresh, not a
+ // stale estimate from either context. No persistent migration is implied.
+ own().own_est=3.1f;own().stable=30;mock_native_context=0x1000;touch_frame();
+ assert(own().own_est<0 && own().stable==0);
+ // Even if the native handle remains identical, replacing the wrapper is
+ // conservative evidence that the previous per-thread cache should reset.
+ own().own_est=3.1f;own().stable=30;g_opengl_context=reinterpret_cast<void *>(0x8001);touch_frame();
+ assert(own().own_est<0 && own().stable==0);
+ mock_native_context=0;
  // Different render threads must not share the global-own estimate as in
  // stationary seq 153699/153710. This checks isolation, not real GL timing.
  own().own_est=2.99280167f;own().stable=30;pcache().count=1;

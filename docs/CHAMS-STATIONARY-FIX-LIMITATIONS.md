@@ -11,3 +11,18 @@ The own tracker still uses an individual draw origin, global swap-derived epochs
 Mock regression fixtures include capture seq 55062/55064 and the school pair 33655/33657; tests exercise thread isolation, context switching, singular/NaN fallback and existing GL state/config/capture behavior. They do not test a real GL driver or pixels and cannot verify enemy/local identity. Gloo Wall identification remains unsolved; wall hints did not fire in the supplied captures, and no synchronized pixel/draw label establishes wall geometry. No wall heuristic change was made.
 
 A deployable release still requires a successful exact-commit Windows x64 build and artifact verification. Even then, in-game tests are required for own ON/OFF, local plus nearby enemy across camera angles, lobby/match, Strict/Wide, both renderers, and Gloo Walls. Accurate ownership needs further labeled, frame-correlated local/enemy observations and an observed game-context/present handoff, not an assumed fixed world transform or a screen side.
+
+## Shared native-context correction (WIP)
+
+`wglMakeCurrent` may assign the same ReShade device wrapper to multiple WGL
+contexts that share resources. `touch_frame` now checks the native WGL context
+as well as the wrapper before reusing its thread-local tracker and caches.
+The mock regression covers two native contexts sharing one wrapper, unchanged
+context, a return to the first context, and wrapper replacement. Context
+switches still reset rather than migrate the tracker. A destroyed and recreated
+native handle reused between draws is not separately generation-tracked.
+This correction does **not** establish a game-frame boundary: the legacy global
+presentation counter still drives `update_own_estimate`, and unrelated-context
+presents can therefore still reset the active tracker. It also does not identify
+players or distinguish nearby opponents or Gloo Walls. Real WGL overhead and
+BlueStacks visual behavior have not been measured.

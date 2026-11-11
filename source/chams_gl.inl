@@ -259,16 +259,20 @@ namespace reshade::chams
 
 	inline void touch_frame()
 	{
-		// GL contexts can render concurrently on different threads and their
-		// program names are not a shared identity. Keep the estimate and caches
-		// local to the calling thread, and discard them when that thread switches
-		// contexts. Migration to another thread deliberately starts fresh.
-		static thread_local const void *last_context = nullptr;
+		// ReShade can reuse one device wrapper for several native WGL contexts
+		// in a share group, so the wrapper pointer is not a context identity.
+		// Isolate caches and the legacy estimate whenever either changes. A
+		// migration to another thread deliberately starts fresh. Native handle
+		// reuse without an observed draw between lifetimes remains unhandled.
+		static thread_local const void *last_device = nullptr;
+		static thread_local uintptr_t last_native_context = 0;
 		static thread_local unsigned last_frame = 0xFFFFFFFFu;
+		const uintptr_t native_context = capture::native_context();
 		const unsigned frame = g_frame_id.load(std::memory_order_relaxed);
-		if (last_context != g_opengl_context)
+		if (last_device != g_opengl_context || last_native_context != native_context)
 		{
-			last_context = g_opengl_context;
+			last_device = g_opengl_context;
+			last_native_context = native_context;
 			own() = own_track{};
 			pcache().count = 0;
 			icache().count = 0;
