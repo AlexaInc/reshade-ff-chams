@@ -164,8 +164,8 @@ int main(int argc, char **argv) {
  // Exercise actual integrated scope against the standalone asynchronous writer.
  assert(capture::runtime_start(argv[1]));
  g_opengl_context=reinterpret_cast<void *>(1);g_settings.enabled=true;g_overlay_open=false;g_budget_left=0;
- ints[GL_CURRENT_PROGRAM][0]=123;
- { capture_gl_scope scope("mock_draw", GL_TRIANGLES, 200); draw_chams(GL_TRIANGLES,200,[&]{}, &scope); }
+ ints[GL_CURRENT_PROGRAM][0]=123; ints[GL_ELEMENT_ARRAY_BUFFER_BINDING][0]=805;
+ { capture_gl_scope scope("mock_draw", GL_TRIANGLES, 200); scope.index_pointer(reinterpret_cast<void *>(40)); draw_chams(GL_TRIANGLES,200,[&]{}, &scope); }
  g_budget_left=110;g_settings.detect_mode=0;g_settings.render_mode=1;g_settings.glow=true;
  g_settings.glow_alpha=.5f;g_settings.stroke=false;g_settings.wire=false;
  { capture_gl_scope scope("reject_draw", GL_TRIANGLES, 200); draw_chams(GL_TRIANGLES,200,[&]{}, &scope); }
@@ -175,8 +175,8 @@ int main(int argc, char **argv) {
  assert(!status.io_error && !status.dropped && status.draws==3 && status.instrumentation_samples==3);
  // Program metadata must be re-emitted when another session starts.
  assert(capture::runtime_start(argv[1]));
- g_budget_left=0;ints[GL_CURRENT_PROGRAM][0]=123;
- { capture_gl_scope scope("mock_draw", GL_TRIANGLES, 200); draw_chams(GL_TRIANGLES,200,[&]{}, &scope); }
+ g_budget_left=0;ints[GL_CURRENT_PROGRAM][0]=123;ints[GL_ELEMENT_ARRAY_BUFFER_BINDING][0]=0;
+ { capture_gl_scope scope("mock_draw", GL_TRIANGLES, 200); scope.index_pointer(reinterpret_cast<void *>(0xdeadbeef)); draw_chams(GL_TRIANGLES,200,[&]{}, &scope); }
  capture::runtime_stop(); status=capture::runtime_status();
  assert(!status.io_error && !status.dropped && status.draws==1);
  const int iterations=4000; auto off_start=std::chrono::steady_clock::now();
@@ -195,7 +195,7 @@ with tempfile.TemporaryDirectory() as d:
  subprocess.run(['g++','-std=c++17','-O0','-Wformat=2','-Werror=format',str(p),str(root/'source/chams_capture.cpp'),'-pthread','-o',str(exe)],check=True)
  subprocess.run([str(exe),d],check=True)
  sessions=list(pathlib.Path(d).glob('session-*')); assert len(sessions)==3
- observed=[]
+ observed=[]; offsets=[]
  for session in sessions:
   events=[json.loads(line) for f in sorted(session.glob('capture-*.jsonl')) for line in f.read_text().splitlines()]
   draws=[e for e in events if e['event']=='draw']
@@ -203,6 +203,7 @@ with tempfile.TemporaryDirectory() as d:
   first=draws[0]; assert first['api'] in ('mock_draw','benchmark') and first['decision']=='budget' and first['count']==200
   assert first['program_epoch']==infos[0]['epoch'] and first['program']==infos[0]['program']
   if first['api']=='benchmark': assert len(draws)==4000
-  else: observed.append([x['decision'] for x in draws])
+  else: observed.append([x['decision'] for x in draws]); offsets.append((first['has_index_offset'],first['index_offset']))
  assert sorted(observed,key=len)==[['budget'],['budget','classifier_reject','direct']]
+ assert sorted(offsets)==[(0,0),(1,40)] # client-memory addresses are never recorded
 print('PASS: GL state round trips; tracker interrupted sequences; Strict/Wide cache mode switch; full inline code compiled against mock GL')

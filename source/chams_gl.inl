@@ -1172,9 +1172,11 @@ namespace reshade::chams
 			const int safe_uniforms = std::max(0, std::min(uniform_count, 4096));
 			const int safe_shaders = std::max(0, std::min(shader_count, 32));
 			std::string head = "\"program\":" + std::to_string(program) + ",\"epoch\":" + std::to_string(epoch) +
-				",\"link_status\":" + std::to_string(link_status) + ",\"uniform_count\":" + std::to_string(uniform_count) +
+				",\"link_status\":" + std::to_string(link_status) + ",\"program_query_available\":" + std::to_string(gl.GetProgramiv ? 1 : 0) +
+				",\"uniform_count\":" + std::to_string(uniform_count) + ",\"uniform_query_available\":" + std::to_string(gl.GetActiveUniform ? 1 : 0) +
 				",\"uniforms_recordable\":" + std::to_string(gl.GetActiveUniform ? safe_uniforms : 0) +
-				",\"shader_count\":" + std::to_string(shader_count) + ",\"shaders_recordable\":" + std::to_string(gl.GetAttachedShaders ? safe_shaders : 0);
+				",\"shader_count\":" + std::to_string(shader_count) + ",\"shader_query_available\":" + std::to_string(gl.GetAttachedShaders && gl.GetShaderiv ? 1 : 0) +
+				",\"shaders_recordable\":" + std::to_string(gl.GetAttachedShaders && gl.GetShaderiv ? safe_shaders : 0);
 			capture::runtime_inflight_event(context, "program_info", head);
 			if (gl.GetActiveUniform) for (int i = 0; i < safe_uniforms; ++i) {
 				char name[256] = {}; GLsizei len = 0; GLint size = 0; GLenum type = 0;
@@ -1218,8 +1220,10 @@ namespace reshade::chams
 		bool active = false; uintptr_t context = 0; uint64_t surface = 0, program_epoch = 0, preparation_ns = 0;
 		capture::draw_ticket ticket;
 		const char *api = "unknown", *decision = "not_evaluated";
-		GLint mode = 0, count = 0, program = 0, array = 0, element = 0, vao = 0, framebuffer = 0;
-		GLint first = -1, instances = -1, index_type = -1, base_vertex = 0, base_instance = 0, draw_count = -1, stride = -1;
+		GLint mode = 0, count = 0, program = 0, array = 0, element = 0, indirect_buffer = 0, vao = 0, framebuffer = 0;
+		GLint first = -1, instances = -1, index_type = -1, base_vertex = 0, draw_count = -1, stride = -1;
+		uint64_t base_instance = 0, index_offset = 0, indirect_offset = 0, range_start = 0, range_end = 0;
+		int has_index_offset = 0, has_indirect_offset = 0, has_range = 0;
 		GLint viewport[4] = {}, depth_func = 0, blend_src = 0, blend_dst = 0;
 		int depth_test = 0, depth_write = 0, blend = 0, uniform_bits = 0, skin_bits = 0, wall_bits = 0, wall_hint = -1, matrix_bits = 0;
 		int detect = 0, renderer = 0, hide = 0, budget = 0, stable = 0, has_info = 0;
@@ -1241,6 +1245,7 @@ namespace reshade::chams
 			}
 			gl.GetIntegerv(GL_CURRENT_PROGRAM, &program);
 			gl.GetIntegerv(GL_ARRAY_BUFFER_BINDING, &array); gl.GetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &element);
+			gl.GetIntegerv(GL_DRAW_INDIRECT_BUFFER_BINDING, &indirect_buffer);
 			gl.GetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao); gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &framebuffer);
 			gl.GetIntegerv(GL_VIEWPORT, viewport); gl.GetIntegerv(GL_DEPTH_FUNC, &depth_func);
 			gl.GetIntegerv(GL_BLEND_SRC_RGB, &blend_src); gl.GetIntegerv(GL_BLEND_DST_RGB, &blend_dst);
@@ -1259,6 +1264,8 @@ namespace reshade::chams
 			}
 			preparation_ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
 		}
+		void index_pointer(const void *p) { if (active && element != 0) { has_index_offset = 1; index_offset = reinterpret_cast<uintptr_t>(p); } }
+		void indirect_pointer(const void *p) { if (active && indirect_buffer != 0) { has_indirect_offset = 1; indirect_offset = reinterpret_cast<uintptr_t>(p); } }
 		void state(const program_info &p, float d, bool capture_tracker = true)
 		{
 			if (!active) return;
@@ -1273,8 +1280,9 @@ namespace reshade::chams
 			const auto serialize_start = std::chrono::steady_clock::now();
 			try {
 				char b[4096]; int n = std::snprintf(b, sizeof(b),
-					"\"api\":\"%s\",\"mode\":%d,\"count\":%d,\"first\":%d,\"instances\":%d,\"index_type\":%d,\"base_vertex\":%d,\"base_instance\":%d,\"draw_count\":%d,\"indirect_stride\":%d,\"program\":%d,\"program_epoch\":%llu,\"array_buffer\":%d,\"element_buffer\":%d,\"vao\":%d,\"framebuffer\":%d,\"viewport\":[%d,%d,%d,%d],\"depth_test\":%d,\"depth_write\":%d,\"depth_func\":%d,\"blend\":%d,\"blend_src\":%d,\"blend_dst\":%d,\"token_bits\":%d,\"skin_bits\":%d,\"wall_bits\":%d,\"wall_hint\":%d,\"matrix_bits\":%d,\"detect\":%d,\"renderer\":%d,\"hide_own\":%d,\"enabled\":%d,\"through_walls\":%d,\"glow\":%d,\"stroke\":%d,\"wire\":%d,\"budget\":%d,\"decision\":\"%s\",\"has_info\":%d,\"distance_source\":\"%s\",\"stable\":%d",
-					api, mode, count, first, instances, index_type, base_vertex, base_instance, draw_count, stride, program, static_cast<unsigned long long>(program_epoch), array, element, vao, framebuffer, viewport[0], viewport[1], viewport[2], viewport[3],
+					"\"api\":\"%s\",\"mode\":%d,\"count\":%d,\"first\":%d,\"instances\":%d,\"index_type\":%d,\"base_vertex\":%d,\"base_instance\":%llu,\"draw_count\":%d,\"indirect_stride\":%d,\"program\":%d,\"program_epoch\":%llu,\"array_buffer\":%d,\"element_buffer\":%d,\"indirect_buffer\":%d,\"has_index_offset\":%d,\"index_offset\":%llu,\"has_indirect_offset\":%d,\"indirect_offset\":%llu,\"has_range\":%d,\"range_start\":%llu,\"range_end\":%llu,\"vao\":%d,\"framebuffer\":%d,\"viewport\":[%d,%d,%d,%d],\"depth_test\":%d,\"depth_write\":%d,\"depth_func\":%d,\"blend\":%d,\"blend_src\":%d,\"blend_dst\":%d,\"token_bits\":%d,\"skin_bits\":%d,\"wall_bits\":%d,\"wall_hint\":%d,\"matrix_bits\":%d,\"detect\":%d,\"renderer\":%d,\"hide_own\":%d,\"enabled\":%d,\"through_walls\":%d,\"glow\":%d,\"stroke\":%d,\"wire\":%d,\"budget\":%d,\"decision\":\"%s\",\"has_info\":%d,\"distance_source\":\"%s\",\"stable\":%d",
+					api, mode, count, first, instances, index_type, base_vertex, static_cast<unsigned long long>(base_instance), draw_count, stride, program, static_cast<unsigned long long>(program_epoch), array, element, indirect_buffer,
+					has_index_offset, static_cast<unsigned long long>(index_offset), has_indirect_offset, static_cast<unsigned long long>(indirect_offset), has_range, static_cast<unsigned long long>(range_start), static_cast<unsigned long long>(range_end), vao, framebuffer, viewport[0], viewport[1], viewport[2], viewport[3],
 					depth_test, depth_write, depth_func, blend, blend_src, blend_dst, uniform_bits, skin_bits, wall_bits, wall_hint, matrix_bits, detect, renderer, hide, enabled, through, glow, stroke, wire, budget, decision, has_info, dist_source, stable);
 				if (n < 0 || static_cast<size_t>(n) >= sizeof(b)) { capture::runtime_end_draw(ticket, nullptr); return; }
 				std::string body(b, static_cast<size_t>(n));

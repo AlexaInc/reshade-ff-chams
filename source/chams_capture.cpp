@@ -3,6 +3,7 @@
 #include <limits>
 #include <sstream>
 #include <memory>
+#include <locale>
 #include <shared_mutex>
 
 namespace reshade::chams::capture
@@ -141,6 +142,7 @@ namespace reshade::chams::capture
   // Summary is a separate file and is not included in the sequenced event stream.
   std::ofstream f(_directory / "summary.json", std::ios::binary | std::ios::trunc);
   if (f) {
+   f.imbue(std::locale::classic());
    f << "{\"v\":1,\"complete\":" << (s.io_error || s.dropped || s.partial_frames ? "false" : "true")
      << ",\"io_error\":" << (s.io_error ? "true" : "false")
      << ",\"queue_capacity_records\":" << _queue_limit << ",\"rotation_target_bytes\":" << _rotate_bytes
