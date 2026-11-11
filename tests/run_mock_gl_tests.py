@@ -11,6 +11,17 @@ assert events[68037]['world']==events[68040]['world'] and events[68037]['view_pr
 assert (events[68037]['decision'],events[68040]['decision'])==('direct','hide_own')
 assert events[69236]['event']=='present_begin' and events[69236]['context']==1 and events[69239]['context']==3
 assert events[69239]['reason']=='no_observation' and events[264480]['reason']=='out_of_range'
+flicker=json.loads((root/'tests/fixtures/flicker-8ea3d22-selected.json').read_text())
+assert flicker['source_sha256']=='09ac10364b6eb4ec86ec89219b3b48e79135ad38e7ca463d231df3632627bf26'
+fl={e['line']:e for e in flicker['records']}
+assert [fl[n]['hidden'] for n in (8683,9073,9233)]==[0,1,0]
+assert [fl[n]['stable'] for n in (8683,9073,9233)]==[0,30,0]
+assert [fl[n]['ownest'] for n in (8683,9073,9233)]==[-1.0,2.63,-1.0]
+assert fl[8683]['world']==fl[9073]['world']==fl[9233]['world']
+assert fl[10559]['hidden']==fl[10570]['hidden']==0
+assert fl[10560]['hidden']==0 and fl[10571]['hidden']==1
+assert fl[10559]['f']==fl[10560]['f'] and fl[10570]['f']==fl[10571]['f']
+assert all(e['hideown']==1 for e in fl.values())
 s = (root/'source/chams_gl.inl').read_text() + (root/'source/chams_overlay.inl').read_text()
 tokens = sorted(set(re.findall(r'\bGL_[A-Z0-9_]+\b', s)) - {'GL_TRUE','GL_FALSE'})
 names = sorted(set(re.findall(r'\bgl\.([A-Za-z0-9_]+)', s)))
@@ -194,6 +205,27 @@ int main(int argc, char **argv) {
  own().own_est=@F9_ACQUIRED@;own().stable=30;own().frame_min=@F9_MIN@;
  ++g_frame_id;touch_frame();
  pending("unrelated present does not finalize an incomplete game interval",own().own_est>0 && own().stable==30);
+ // New real dump: 8ea3d22 lines 8683/9073/9233 have one fixed-root
+ // candidate visible, hidden, visible with estimate -1, 2.63, -1. The
+ // exact reset reason and object ownership were not recorded. Model the
+ // previously observed empty global-epoch interruption with actual tracker
+ // code; do not assume that was the trigger in this new legacy text dump.
+ settings flicker_settings{};flicker_settings.hide_own=true;flicker_settings.own_distance=@FL_CAP@;
+ program_info flicker_program{};flicker_program.dist_source="_WorldSpaceCameraPos";
+ g_opengl_context=reinterpret_cast<void *>(0x5000);g_frame_id=1000;touch_frame();
+ const bool b0=own_distance_excludes(flicker_settings,flicker_program,@FL_BODY@,own());
+ const bool e0=own_distance_excludes(flicker_settings,flicker_program,@FL_CONTROL@,own());
+ for(int i=0;i<30;++i){own().frame_min=@FL_EST@;++g_frame_id;touch_frame();}
+ const bool b1=own_distance_excludes(flicker_settings,flicker_program,@FL_BODY@,own());
+ const bool e1=own_distance_excludes(flicker_settings,flicker_program,@FL_CONTROL@,own());
+ own().frame_min=1e9f;++g_frame_id;touch_frame();
+ const bool b2=own_distance_excludes(flicker_settings,flicker_program,@FL_BODY@,own());
+ const bool e2=own_distance_excludes(flicker_settings,flicker_program,@FL_CONTROL@,own());
+ std::printf("Flicker tracker replay matches captured candidate decision pattern: %s\n",(!b0 && b1 && !b2) ? "yes (bug reproduced)" : "no (behavior changed)");
+ // The far control is observed at 6742/6743 but not demonstrated to be an
+ // enemy, and its third interval is synthetic. No nearby-enemy proof.
+ assert(!e0 && !e1 && !e2);
+ pending("flicker candidate consistently excluded through tracker interruption",b0 && b1 && b2);
  g_opengl_context=nullptr;own()=own_track{};pcache().count=0;icache().count=0;
  // If a declared camera uniform has zero data, name the actual matrix fallback.
  p.view.plain=0;p.view_m[0]=p.view_m[5]=p.view_m[10]=1;p.view_m[12]=-2;
@@ -299,6 +331,8 @@ for token, value in {
  '@F9_PART@':events[45742]['distance'], '@F9_BEFORE@':events[68039]['before_estimate'],
  '@F9_AFTER@':events[68039]['estimate'], '@F9_RESET@':events[69239]['before_estimate'],
  '@F9_ACQUIRED@':events[264480]['before_estimate'], '@F9_MIN@':events[264480]['frame_min'],
+ '@FL_CAP@':fl[9073]['owncap'], '@FL_BODY@':fl[9073]['dist'],
+ '@FL_EST@':fl[9073]['ownest'], '@FL_CONTROL@':fl[10570]['dist'],
 }.items(): head=head.replace(token,repr(value)+'f')
 with tempfile.TemporaryDirectory() as d:
  p=pathlib.Path(d)/'mock.cpp';p.write_text(head);exe=pathlib.Path(d)/'test'
