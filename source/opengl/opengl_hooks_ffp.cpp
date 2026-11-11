@@ -8,6 +8,7 @@
 #include "opengl_impl_type_convert.hpp"
 #include "hook_manager.hpp"
 #include "addon_manager.hpp"
+#include "chams_capture.hpp"
 
 extern thread_local reshade::opengl::device_context_impl *g_opengl_context;
 
@@ -412,6 +413,12 @@ extern "C" void APIENTRY glFinish()
 {
 	static const auto trampoline = reshade::hooks::call(glFinish);
 	trampoline();
+	if (g_opengl_context != nullptr && reshade::chams::capture::runtime_enabled())
+	{
+		try { reshade::chams::capture::runtime_gl_event(reshade::chams::capture::native_context(),
+			reshade::chams::capture::native_surface(), "\"api\":\"glFinish\",\"phase\":\"return\""); }
+		catch (...) { reshade::chams::capture::runtime_record_loss(); }
+	}
 }
 extern "C" void APIENTRY glFlush()
 {
@@ -422,6 +429,12 @@ extern "C" void APIENTRY glFlush()
 
 	static const auto trampoline = reshade::hooks::call(glFlush);
 	trampoline();
+	if (g_opengl_context != nullptr && reshade::chams::capture::runtime_enabled())
+	{
+		try { reshade::chams::capture::runtime_gl_event(reshade::chams::capture::native_context(),
+			reshade::chams::capture::native_surface(), "\"api\":\"glFlush\",\"phase\":\"return\""); }
+		catch (...) { reshade::chams::capture::runtime_record_loss(); }
+	}
 }
 
 extern "C" void APIENTRY glFogf(GLenum pname, GLfloat param)

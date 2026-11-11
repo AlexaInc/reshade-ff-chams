@@ -49,6 +49,13 @@ with tempfile.TemporaryDirectory() as tmp:
     runtime_rows=[json.loads(line) for f in sorted(sessions[0].glob('capture-*.jsonl')) for line in f.read_text().splitlines()]
     assert [x['event'] for x in runtime_rows].index('draw') < [x['event'] for x in runtime_rows].index('session_end')
     assert any(x['event']=='frame_end' and x['reason']=='session_stop_incomplete' for x in runtime_rows)
+    sync_summary,sync_rows=load('sync')
+    sync_events=[e for e in sync_rows if e['event']=='gl_sync']
+    assert [e['sync_id'] for e in sync_events]==[1,1,1,1,2,0]
+    assert sync_events[0]['context']!=sync_events[1]['context']
+    assert sync_events[2]['result']==0x911a and sync_events[1]['phase']=='begin'
+    assert '305419896' not in json.dumps(sync_events) and '2290649224' not in json.dumps(sync_events)
+    print('PASS: session-local sync labels, cross-context observations and handle reuse (not a GPU handoff proof)')
     s,rows=load('overflow')
     assert not s['complete'] and s['dropped'] > 0 and s['written']==len(rows)
     assert s['oversized'] >= 1 and s['queue_full'] > 0

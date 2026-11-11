@@ -272,6 +272,28 @@ namespace reshade::chams::capture
   if (surface == uint64_t(-1)) _recorder.emit(kind, c.id, 0, body);
   else { begin(c, surface); _recorder.emit(kind, c.id, c.streams[surface].frame, "\"surface\":" + std::to_string(surface) + (body.empty() ? "" : "," + body)); }
  }
+ void correlator::sync_event(uintptr_t native, uintptr_t native_surface, const char *api, const char *phase,
+                              uintptr_t handle, bool create, bool erase, uint32_t arg, uint64_t timeout, uint32_t result)
+ {
+  if (!native) return;
+  std::lock_guard<std::mutex> lock(_mutex);
+  uint64_t id = 0;
+  if (handle) {
+   auto it = _syncs.find(handle);
+   if (create) {
+    if (it == _syncs.end() && _syncs.size() >= 65536) { _recorder.external_drop(); return; }
+    id = ++_next_sync; _syncs[handle] = id;
+   } else if (it != _syncs.end()) {
+    id = it->second;
+    if (erase) _syncs.erase(it);
+   }
+  }
+  auto &c = ensure(native); const auto sid = surface_locked(native_surface); begin(c, sid);
+  const std::string body = std::string("\"surface\":") + std::to_string(sid) +
+    ",\"api\":\"" + api + "\",\"phase\":\"" + phase + "\",\"sync_id\":" + std::to_string(id) +
+    ",\"arg\":" + std::to_string(arg) + ",\"timeout\":" + std::to_string(timeout) + ",\"result\":" + std::to_string(result);
+  _recorder.emit("gl_sync", c.id, c.streams[sid].frame, body);
+ }
  void correlator::present_begin(uintptr_t native, uintptr_t native_surface)
  {
   if (!native) return;
@@ -316,6 +338,11 @@ namespace reshade::chams::capture
   runtime_controller &controller() { static auto *c = new runtime_controller; return *c; }
  }
  bool runtime_enabled() { return controller().active.load(std::memory_order_acquire); }
+ uint64_t runtime_generation() noexcept
+ {
+  auto &c = controller(); const auto generation = c.generation.load(std::memory_order_acquire);
+  return c.active.load(std::memory_order_acquire) ? generation : 0;
+ }
  bool runtime_start(const std::filesystem::path &parent)
  {
   auto &c = controller(); std::lock_guard<std::mutex> life(c.lifecycle);
@@ -413,6 +440,21 @@ namespace reshade::chams::capture
  }
  void runtime_draw(uintptr_t n, const std::string &body) { runtime_event([&](correlator &c){ c.draw(n, body); }); }
  void runtime_event(uintptr_t n, const char *kind, const std::string &body) { runtime_event([&](correlator &c){ c.event(n, kind, body); }); }
+ void runtime_gl_event(uintptr_t n, uintptr_t surface, const std::string &body) noexcept
+ {
+  try { runtime_event([&](correlator &c){ const auto sid = c.surface(surface); c.event(n, "gl_lifecycle", body, sid); }); }
+  catch (...) { runtime_record_loss(); }
+ }
+ void runtime_sync_event(uintptr_t n, uintptr_t surface, const char *api, const char *phase,
+                         uintptr_t handle, bool create, bool erase, uint32_t arg, uint64_t timeout, uint32_t result, uint64_t generation) noexcept
+ {
+  if (!generation) return;
+  try { runtime_event([&](correlator &c){
+   if (controller().generation.load(std::memory_order_acquire) == generation)
+    c.sync_event(n, surface, api, phase, handle, create, erase, arg, timeout, result);
+  }); }
+  catch (...) { runtime_record_loss(); }
+ }
  void runtime_present_begin(uintptr_t n, uintptr_t surface) { runtime_event([&](correlator &c){ c.present_begin(n, surface); }); }
  void runtime_present(uintptr_t n, uintptr_t surface, bool ok) { runtime_event([&](correlator &c){ c.present(n, ok, surface); }); }
 

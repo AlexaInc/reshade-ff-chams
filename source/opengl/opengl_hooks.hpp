@@ -79,6 +79,11 @@ extern "C" void APIENTRY glCopyTextureSubImage1D(GLuint texture, GLint level, GL
 extern "C" void APIENTRY glCopyTextureSubImage2D(GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height);
 extern "C" void APIENTRY glCopyTextureSubImage3D(GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLint x, GLint y, GLsizei width, GLsizei height);
 extern "C" void APIENTRY glCullFace(GLenum mode);
+extern "C" GLsync APIENTRY glFenceSync(GLenum condition, GLbitfield flags);
+extern "C" void APIENTRY glWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout);
+extern "C" GLenum APIENTRY glClientWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout);
+extern "C" void APIENTRY glDeleteSync(GLsync sync);
+extern "C" void APIENTRY glDeleteFramebuffers(GLsizei n, const GLuint *framebuffers);
 extern "C" void APIENTRY glDeleteBuffers(GLsizei n, const GLuint *buffers);
 extern "C" void APIENTRY glDeleteProgram(GLuint program);
 extern "C" void APIENTRY glDeleteProgramsARB(GLsizei n, const GLuint *programs);

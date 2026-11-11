@@ -100,6 +100,9 @@ namespace reshade::chams::capture
   draw_ticket begin_draw(uintptr_t native_context, uint64_t surface);
   void end_draw(const draw_ticket &ticket, const std::string &body);
   void event(uintptr_t native_context, const char *kind, const std::string &body, uint64_t surface = uint64_t(-1));
+  // Sync handles are never serialized; IDs are best-effort per-session labels.
+  void sync_event(uintptr_t native_context, uintptr_t native_surface, const char *api, const char *phase,
+                  uintptr_t handle, bool create, bool erase, uint32_t arg, uint64_t timeout, uint32_t result);
   void present_begin(uintptr_t native_context, uintptr_t native_surface = 0);
   void present(uintptr_t native_context, bool succeeded, uintptr_t native_surface = 0);
   void finish();
@@ -114,6 +117,8 @@ namespace reshade::chams::capture
   std::unordered_map<uintptr_t, context> _contexts;
   uint64_t _next_context = 0, _next_surface = 0, _next_draw = 0;
   std::unordered_map<uintptr_t, uint64_t> _surfaces;
+  std::unordered_map<uintptr_t, uint64_t> _syncs;
+  uint64_t _next_sync = 0;
  };
  // Integration control. Event functions are safe to call concurrently with stop.
  // Native handles are mapped to session-local IDs and never serialized.
@@ -124,6 +129,7 @@ namespace reshade::chams::capture
  bool runtime_start(const std::filesystem::path &parent);
  void runtime_stop();
  bool runtime_enabled();
+ uint64_t runtime_generation() noexcept;
  bool runtime_begin_draw();
  draw_ticket runtime_bind_draw(uintptr_t native_context, uint64_t surface) noexcept;
  void runtime_end_draw(const draw_ticket &ticket, const std::string *body) noexcept;
@@ -140,6 +146,11 @@ namespace reshade::chams::capture
  void runtime_marker(uintptr_t native_context, uintptr_t native_surface, const char *source);
  void runtime_draw(uintptr_t native_context, const std::string &body);
  void runtime_event(uintptr_t native_context, const char *kind, const std::string &body);
+ // Records an intercepted GL call in its observed context/surface. Events are
+ // call observations only: they do not imply GL success or a frame boundary.
+ void runtime_gl_event(uintptr_t native_context, uintptr_t native_surface, const std::string &body) noexcept;
+ void runtime_sync_event(uintptr_t native_context, uintptr_t native_surface, const char *api, const char *phase,
+                         uintptr_t handle, bool create, bool erase, uint32_t arg, uint64_t timeout, uint32_t result, uint64_t generation) noexcept;
  void runtime_present_begin(uintptr_t native_context, uintptr_t native_surface);
  void runtime_present(uintptr_t native_context, uintptr_t native_surface, bool succeeded);
 

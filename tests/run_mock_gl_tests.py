@@ -244,6 +244,10 @@ int main(int argc, char **argv) {
  // Exercise actual integrated scope against the standalone asynchronous writer.
  assert(capture::runtime_start(argv[1]));
  g_opengl_context=reinterpret_cast<void *>(1);g_settings.enabled=true;g_overlay_open=false;g_budget_left=0;
+ // Test actual lifecycle logger against the mock GL state. This does not test
+ // hook dispatch or a Windows driver. The fixture's FBO 59 is not hardcoded.
+ ints[GL_DRAW_FRAMEBUFFER_BINDING][0]=59;ints[GL_READ_FRAMEBUFFER_BINDING][0]=88;
+ capture_gl_lifecycle("test_framebuffer_attachment",GL_FRAMEBUFFER,1703,GL_COLOR_ATTACHMENT0,2,3);
  ints[GL_CURRENT_PROGRAM][0]=123; ints[GL_ELEMENT_ARRAY_BUFFER_BINDING][0]=805;
  { capture_gl_scope scope("mock_draw", GL_TRIANGLES, 200); scope.index_pointer(reinterpret_cast<void *>(40)); draw_chams(GL_TRIANGLES,200,[&]{}, &scope); }
  g_budget_left=110;g_settings.detect_mode=0;g_settings.render_mode=1;g_settings.glow=true;
@@ -287,6 +291,11 @@ with tempfile.TemporaryDirectory() as d:
   events=[json.loads(line) for f in sorted(session.glob('capture-*.jsonl')) for line in f.read_text().splitlines()]
   draws=[e for e in events if e['event']=='draw']
   infos=[e for e in events if e['event']=='program_info']; assert infos
+  lifecycle=[e for e in events if e['event']=='gl_lifecycle' and e.get('api')=='test_framebuffer_attachment']
+  if len(draws)==3:
+   assert len(lifecycle)==1 and lifecycle[0]['object']==1703 and lifecycle[0]['detail']==2 and lifecycle[0]['detail2']==3
+   assert lifecycle[0]['draw_framebuffer']==59 and lifecycle[0]['read_framebuffer']==88 and lifecycle[0]['surface']!=0
+  else: assert not lifecycle
   first=draws[0]; assert first['api'] in ('mock_draw','benchmark') and first['decision']=='budget' and first['count']==200
   assert first['program_epoch']==infos[0]['epoch'] and first['program']==infos[0]['program']
   assert first['color_mask']==[1,0,1,0] and len(first['depth_range'])==2

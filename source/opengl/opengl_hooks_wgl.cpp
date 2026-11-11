@@ -1708,6 +1708,7 @@ extern "C" PROC  WINAPI wglGetProcAddress(LPCSTR lpszProc)
 #endif
 #ifdef GL_VERSION_3_0
 		RESHADE_OPENGL_HOOK_PROC(glMapBufferRange);
+		RESHADE_OPENGL_HOOK_PROC(glDeleteFramebuffers);
 		RESHADE_OPENGL_HOOK_PROC(glDeleteRenderbuffers);
 		RESHADE_OPENGL_HOOK_PROC(glFramebufferTexture1D);
 		RESHADE_OPENGL_HOOK_PROC(glFramebufferTexture2D);
@@ -1744,6 +1745,10 @@ extern "C" PROC  WINAPI wglGetProcAddress(LPCSTR lpszProc)
 		RESHADE_OPENGL_HOOK_PROC(glDrawElementsInstanced);
 #endif
 #ifdef GL_VERSION_3_2
+		RESHADE_OPENGL_HOOK_PROC(glFenceSync);
+		RESHADE_OPENGL_HOOK_PROC(glWaitSync);
+		RESHADE_OPENGL_HOOK_PROC(glClientWaitSync);
+		RESHADE_OPENGL_HOOK_PROC(glDeleteSync);
 		RESHADE_OPENGL_HOOK_PROC(glFramebufferTexture);
 		RESHADE_OPENGL_HOOK_PROC(glTexImage2DMultisample);
 		RESHADE_OPENGL_HOOK_PROC(glTexImage3DMultisample);

@@ -29,3 +29,40 @@ Program ID reuse is handled by a diagnostic metadata epoch invalidated on observ
 The writer uses a bounded asynchronous queue (32,768 records) and reports queue overflow, oversized records, allocation failures and I/O failures. It does not silently sample records, but a trace with loss is incomplete. Rendering threads still perform GL queries and metadata collection, construct records and acquire locks; a slow driver, heavy scene or full queue can reduce FPS. `instrumentation_ns` and `instrumentation_samples` are cumulative wall time inside selected draw-snapshot/serialization code; `enqueue_ns` is cumulative producer wait/work inside the recorder and can overlap the former. Neither is GPU time or a controlled FPS comparison. A Linux fake-GL test measured the capture path against disabled capture, but real BlueStacks/Windows GPU overhead has **not** been measured. First run should be short and monitor FPS, disk usage and the loss indicator before attempting long sessions.
 
 `tools/chams_capture_verify.py SESSION_FOLDER` is a read-only offline validator for JSON syntax, sequence gaps, draw pairing, part counts and reported losses, and prints SHA-256 for each part. It cannot prove hooks saw all graphics activity or that an object is a player/wall. On untrusted uploads, validate all files and avoid following archive traversal links.
+
+### GL handoff observations (WIP; not a frame/ownership fix)
+
+When tracking is enabled, `gl_lifecycle` records selected framebuffer binds,
+attachment updates, clears, blits, texture binds/deletes, renderbuffer deletes,
+and framebuffer deletes. Records carry the active context/surface and, for the
+main GL hooks, sampled read/draw framebuffer and active texture bindings.
+Object numbers are OpenGL names, not stable object identities. Delete batches
+above 128 mark the capture as dropped rather than silently claiming completeness.
+Calls are observations: addon interception or GL errors may mean an attempted
+call did not execute successfully. Capturing state queries can add overhead and
+may interact with driver error state. No query clears or consumes `glGetError`.
+
+`gl_sync` records core `glFenceSync`, `glWaitSync`, `glClientWaitSync`, and
+`glDeleteSync`; finish and flush returns are `gl_lifecycle` events. Sync handles
+are not written to disk. A monotonically assigned session-local `sync_id` is a
+best-effort association, not proof of shared ownership: `0` means the creation
+was not observed, a context may use a pre-existing sync, and handle reuse in
+unrelated share groups can collide. Client-wait return codes are recorded; a
+wait call by itself is not proof of GPU completion. Begin/return can straddle
+capture stop; session-generation checks prevent a return from leaking into a
+new recording. Capture start is not atomic with other threads' GL calls.
+
+Coverage is incomplete: state established before tracking starts, EGL/Android
+operations, OS/driver compositor handoff, unhooked extensions or APIs, native
+fence/import/export paths, direct-state-access attachment calls, and calls that
+bypass these hooks may be absent. Starting capture midway does not reconstruct
+existing framebuffer attachments or share groups. These observations must not
+be used automatically to define a frame boundary without real lifecycle
+validation. The five known tracker tests remain expected failures.
+
+For `gl_sync`, `arg` is the fence condition for `glFenceSync`, otherwise wait
+flags; `timeout` carries fence flags for `glFenceSync` and the GL timeout for
+waits. `result` is a non-null indicator for fence creation or the client-wait
+result; zero on other calls does not mean success. A sync generated before a
+session is intentionally labelled `0`. Captured frame values remain the
+recorder's context/surface presentation counters, not verified game frames.

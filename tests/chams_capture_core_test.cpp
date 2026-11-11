@@ -69,6 +69,19 @@ int main(int argc, char **argv)
   surfaces.end_draw(crossing, "\"value\":13"); surfaces.finish();
  }
  r.stop(); assert(!r.snapshot().dropped && !r.snapshot().partial_frames);
+ // Sync object labels are session-local, do not serialize handles, and
+ // follow a known handle across contexts. Reuse after delete gets a new ID.
+ assert(r.start(root / "sync", 1000, 4096));
+ { correlator sync(r); sync.created(5); sync.created(6);
+  sync.sync_event(5, 15, "glFenceSync", "return", 0x12345678, true, false, 7, 0, 1);
+  sync.sync_event(6, 16, "glWaitSync", "begin", 0x12345678, false, false, 0, 20, 0);
+  sync.sync_event(6, 16, "glClientWaitSync", "return", 0x12345678, false, false, 0, 20, 0x911a);
+  sync.sync_event(5, 15, "glDeleteSync", "return", 0x12345678, false, true, 0, 0, 0);
+  sync.sync_event(5, 15, "glFenceSync", "return", 0x12345678, true, false, 7, 0, 1);
+  sync.sync_event(6, 16, "glWaitSync", "begin", 0x88888888, false, false, 0, 20, 0);
+  sync.finish();
+ }
+ r.stop(); assert(!r.snapshot().dropped);
  assert(r.start(root / "overflow", 1, 512));
  assert(!r.emit("draw", 1, 1, std::string(8193, 'x'))); // deterministic oversized record drop
  for (int i = 0; i < 100000; ++i) r.emit("draw", 1, 1, "\"value\":1");

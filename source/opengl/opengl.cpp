@@ -793,6 +793,7 @@ extern "C" void APIENTRY glCopyPixels(GLint x, GLint y, GLsizei width, GLsizei h
 
 extern "C" void APIENTRY glClear(GLbitfield mask)
 {
+	reshade::chams::capture_gl_lifecycle("glClear", mask);
 #if RESHADE_ADDON
 	if (g_opengl_context && (
 		reshade::has_addon_event<reshade::addon_event::clear_depth_stencil_view>() ||
@@ -1231,6 +1232,12 @@ extern "C" void APIENTRY glDepthRange(GLclampd zNear, GLclampd zFar)
 #ifdef GL_VERSION_1_1
 extern "C" void APIENTRY glDeleteTextures(GLsizei n, const GLuint *textures)
 {
+	if (reshade::chams::capture::runtime_enabled() && textures != nullptr && n > 0)
+	{
+		for (GLsizei i = 0; i < n && i < 128; ++i)
+			reshade::chams::capture_gl_lifecycle("glDeleteTextures", 0, textures[i]);
+		if (n > 128) reshade::chams::capture::runtime_record_loss();
+	}
 #if RESHADE_ADDON
 	if (g_opengl_context)
 		for (GLsizei i = 0; i < n; ++i)
@@ -1299,6 +1306,7 @@ extern "C" void APIENTRY glBindTexture(GLenum target, GLuint texture)
 {
 	static const auto trampoline = reshade::hooks::call(glBindTexture);
 	trampoline(target, texture);
+	reshade::chams::capture_gl_lifecycle("glBindTexture", target, texture);
 
 #if RESHADE_ADDON >= 2
 	if (g_opengl_context &&
@@ -2489,8 +2497,25 @@ void APIENTRY glUniformMatrix4x3fv(GLint location, GLsizei count, GLboolean tran
 #endif
 
 #ifdef GL_VERSION_3_0
+void APIENTRY glDeleteFramebuffers(GLsizei n, const GLuint *framebuffers)
+{
+	if (reshade::chams::capture::runtime_enabled() && framebuffers != nullptr && n > 0)
+	{
+		for (GLsizei i = 0; i < n && i < 128; ++i)
+			reshade::chams::capture_gl_lifecycle("glDeleteFramebuffers", 0, framebuffers[i]);
+		if (n > 128) reshade::chams::capture::runtime_record_loss();
+	}
+	static const auto trampoline = reshade::hooks::call(glDeleteFramebuffers);
+	trampoline(n, framebuffers);
+}
 void APIENTRY glDeleteRenderbuffers(GLsizei n, const GLuint *renderbuffers)
 {
+	if (reshade::chams::capture::runtime_enabled() && renderbuffers != nullptr && n > 0)
+	{
+		for (GLsizei i = 0; i < n && i < 128; ++i)
+			reshade::chams::capture_gl_lifecycle("glDeleteRenderbuffers", 0, renderbuffers[i]);
+		if (n > 128) reshade::chams::capture::runtime_record_loss();
+	}
 #if RESHADE_ADDON
 	if (g_opengl_context)
 		for (GLsizei i = 0; i < n; ++i)
@@ -2523,6 +2548,7 @@ void APIENTRY glFramebufferTexture1D(GLenum target, GLenum attachment, GLenum te
 {
 	static const auto trampoline = reshade::hooks::call(glFramebufferTexture1D);
 	trampoline(target, attachment, textarget, texture, level);
+	reshade::chams::capture_gl_lifecycle("glFramebufferTexture1D", target, texture, attachment, level, static_cast<GLint>(textarget));
 
 #if RESHADE_ADDON
 	update_framebuffer_object(target);
@@ -2532,6 +2558,7 @@ void APIENTRY glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum te
 {
 	static const auto trampoline = reshade::hooks::call(glFramebufferTexture2D);
 	trampoline(target, attachment, textarget, texture, level);
+	reshade::chams::capture_gl_lifecycle("glFramebufferTexture2D", target, texture, attachment, level, static_cast<GLint>(textarget));
 
 #if RESHADE_ADDON
 	update_framebuffer_object(target);
@@ -2541,6 +2568,7 @@ void APIENTRY glFramebufferTexture3D(GLenum target, GLenum attachment, GLenum te
 {
 	static const auto trampoline = reshade::hooks::call(glFramebufferTexture3D);
 	trampoline(target, attachment, textarget, texture, level, layer);
+	reshade::chams::capture_gl_lifecycle("glFramebufferTexture3D", target, texture, attachment, level, layer);
 
 #if RESHADE_ADDON
 	update_framebuffer_object(target);
@@ -2550,6 +2578,7 @@ void APIENTRY glFramebufferTextureLayer(GLenum target, GLenum attachment, GLuint
 {
 	static const auto trampoline = reshade::hooks::call(glFramebufferTextureLayer);
 	trampoline(target, attachment, texture, level, layer);
+	reshade::chams::capture_gl_lifecycle("glFramebufferTextureLayer", target, texture, attachment, level, layer);
 
 #if RESHADE_ADDON
 	update_framebuffer_object(target);
@@ -2559,6 +2588,7 @@ void APIENTRY glFramebufferRenderbuffer(GLenum target, GLenum attachment, GLenum
 {
 	static const auto trampoline = reshade::hooks::call(glFramebufferRenderbuffer);
 	trampoline(target, attachment, renderbuffertarget, renderbuffer);
+	reshade::chams::capture_gl_lifecycle("glFramebufferRenderbuffer", target, renderbuffer, attachment, static_cast<GLint>(renderbuffertarget));
 
 #if RESHADE_ADDON
 	update_framebuffer_object(target);
@@ -2631,6 +2661,7 @@ auto APIENTRY glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length
 
 void APIENTRY glClearBufferiv(GLenum buffer, GLint drawbuffer, const GLint *value)
 {
+	reshade::chams::capture_gl_lifecycle("glClearBufferiv", buffer, 0, 0, drawbuffer);
 #if RESHADE_ADDON
 	if (g_opengl_context && (
 		reshade::has_addon_event<reshade::addon_event::clear_depth_stencil_view>() ||
@@ -2659,6 +2690,7 @@ void APIENTRY glClearBufferiv(GLenum buffer, GLint drawbuffer, const GLint *valu
 }
 void APIENTRY glClearBufferuiv(GLenum buffer, GLint drawbuffer, const GLuint *value)
 {
+	reshade::chams::capture_gl_lifecycle("glClearBufferuiv", buffer, 0, 0, drawbuffer);
 #if RESHADE_ADDON
 	if (g_opengl_context && (
 		reshade::has_addon_event<reshade::addon_event::clear_depth_stencil_view>() ||
@@ -2687,6 +2719,7 @@ void APIENTRY glClearBufferuiv(GLenum buffer, GLint drawbuffer, const GLuint *va
 }
 void APIENTRY glClearBufferfv(GLenum buffer, GLint drawbuffer, const GLfloat *value)
 {
+	reshade::chams::capture_gl_lifecycle("glClearBufferfv", buffer, 0, 0, drawbuffer);
 #if RESHADE_ADDON
 	if (g_opengl_context && (
 		reshade::has_addon_event<reshade::addon_event::clear_depth_stencil_view>() ||
@@ -2715,6 +2748,7 @@ void APIENTRY glClearBufferfv(GLenum buffer, GLint drawbuffer, const GLfloat *va
 }
 void APIENTRY glClearBufferfi(GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil)
 {
+	reshade::chams::capture_gl_lifecycle("glClearBufferfi", buffer, 0, 0, drawbuffer);
 #if RESHADE_ADDON
 	if (g_opengl_context &&
 		reshade::has_addon_event<reshade::addon_event::clear_depth_stencil_view>())
@@ -2739,6 +2773,7 @@ void APIENTRY glClearBufferfi(GLenum buffer, GLint drawbuffer, GLfloat depth, GL
 
 void APIENTRY glBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter)
 {
+	reshade::chams::capture_gl_lifecycle("glBlitFramebuffer", mask, filter);
 #if RESHADE_ADDON >= 2
 	if (g_opengl_context && (
 		reshade::has_addon_event<reshade::addon_event::copy_texture_region>() ||
@@ -2898,6 +2933,7 @@ void APIENTRY glBindFramebuffer(GLenum target, GLuint framebuffer)
 {
 	static const auto trampoline = reshade::hooks::call(glBindFramebuffer);
 	trampoline(target, framebuffer);
+	reshade::chams::capture_gl_lifecycle("glBindFramebuffer", target, framebuffer);
 
 #if RESHADE_ADDON
 	update_framebuffer_object(target, framebuffer);
@@ -3146,10 +3182,55 @@ void APIENTRY glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, c
 #endif
 
 #ifdef GL_VERSION_3_2
+// Synchronization records capture only GL calls that traverse these hooks.
+// A sync label is not an address, and matching labels alone do not prove
+// cross-context resource ownership or a game-frame handoff.
+GLsync APIENTRY glFenceSync(GLenum condition, GLbitfield flags)
+{
+	static const auto trampoline = reshade::hooks::call(glFenceSync);
+	const uint64_t generation = g_opengl_context ? reshade::chams::capture::runtime_generation() : 0;
+	GLsync sync = trampoline(condition, flags);
+	if (generation)
+		reshade::chams::capture::runtime_sync_event(reshade::chams::capture::native_context(), reshade::chams::capture::native_surface(),
+			"glFenceSync", "return", reinterpret_cast<uintptr_t>(sync), true, false, condition, flags, sync != nullptr, generation);
+	return sync;
+}
+void APIENTRY glWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout)
+{
+	static const auto trampoline = reshade::hooks::call(glWaitSync);
+	const uint64_t generation = g_opengl_context ? reshade::chams::capture::runtime_generation() : 0;
+	if (generation) reshade::chams::capture::runtime_sync_event(reshade::chams::capture::native_context(), reshade::chams::capture::native_surface(),
+		"glWaitSync", "begin", reinterpret_cast<uintptr_t>(sync), false, false, flags, timeout, 0, generation);
+	trampoline(sync, flags, timeout);
+	if (generation) reshade::chams::capture::runtime_sync_event(reshade::chams::capture::native_context(), reshade::chams::capture::native_surface(),
+		"glWaitSync", "return", reinterpret_cast<uintptr_t>(sync), false, false, flags, timeout, 0, generation);
+}
+GLenum APIENTRY glClientWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout)
+{
+	static const auto trampoline = reshade::hooks::call(glClientWaitSync);
+	const uint64_t generation = g_opengl_context ? reshade::chams::capture::runtime_generation() : 0;
+	if (generation) reshade::chams::capture::runtime_sync_event(reshade::chams::capture::native_context(), reshade::chams::capture::native_surface(),
+		"glClientWaitSync", "begin", reinterpret_cast<uintptr_t>(sync), false, false, flags, timeout, 0, generation);
+	const GLenum result = trampoline(sync, flags, timeout);
+	if (generation) reshade::chams::capture::runtime_sync_event(reshade::chams::capture::native_context(), reshade::chams::capture::native_surface(),
+		"glClientWaitSync", "return", reinterpret_cast<uintptr_t>(sync), false, false, flags, timeout, result, generation);
+	return result;
+}
+void APIENTRY glDeleteSync(GLsync sync)
+{
+	static const auto trampoline = reshade::hooks::call(glDeleteSync);
+	const uint64_t generation = g_opengl_context ? reshade::chams::capture::runtime_generation() : 0;
+	trampoline(sync);
+	if (generation)
+		reshade::chams::capture::runtime_sync_event(reshade::chams::capture::native_context(), reshade::chams::capture::native_surface(),
+			"glDeleteSync", "return", reinterpret_cast<uintptr_t>(sync), false, true, 0, 0, 0, generation);
+}
+
 void APIENTRY glFramebufferTexture(GLenum target, GLenum attachment, GLuint texture, GLint level)
 {
 	static const auto trampoline = reshade::hooks::call(glFramebufferTexture);
 	trampoline(target, attachment, texture, level);
+	reshade::chams::capture_gl_lifecycle("glFramebufferTexture", target, texture, attachment, level);
 
 #if RESHADE_ADDON
 	// Need to update render target and depth-stencil bindings after the current framebuffer was updated again
@@ -4073,6 +4154,12 @@ void APIENTRY glBindTextures(GLuint first, GLsizei count, const GLuint *textures
 {
 	static const auto trampoline = reshade::hooks::call(glBindTextures);
 	trampoline(first, count, textures);
+	if (reshade::chams::capture::runtime_enabled() && count > 0)
+	{
+		for (GLsizei i = 0; i < count && i < 128; ++i)
+			reshade::chams::capture_gl_lifecycle("glBindTextures", 0, textures ? textures[i] : 0, 0, static_cast<GLint>(first + i));
+		if (count > 128) reshade::chams::capture::runtime_record_loss();
+	}
 
 #if RESHADE_ADDON >= 2
 	if (g_opengl_context &&
@@ -4551,6 +4638,7 @@ void APIENTRY glNamedRenderbufferStorageMultisample(GLuint renderbuffer, GLsizei
 
 void APIENTRY glClearNamedFramebufferiv(GLuint framebuffer, GLenum buffer, GLint drawbuffer, const GLint *value)
 {
+	reshade::chams::capture_gl_lifecycle("glClearNamedFramebufferiv", buffer, framebuffer, 0, drawbuffer);
 #if RESHADE_ADDON
 	if (g_opengl_context && (
 		reshade::has_addon_event<reshade::addon_event::clear_depth_stencil_view>() ||
@@ -4576,6 +4664,7 @@ void APIENTRY glClearNamedFramebufferiv(GLuint framebuffer, GLenum buffer, GLint
 }
 void APIENTRY glClearNamedFramebufferuiv(GLuint framebuffer, GLenum buffer, GLint drawbuffer, const GLuint *value)
 {
+	reshade::chams::capture_gl_lifecycle("glClearNamedFramebufferuiv", buffer, framebuffer, 0, drawbuffer);
 #if RESHADE_ADDON
 	if (g_opengl_context && (
 		reshade::has_addon_event<reshade::addon_event::clear_depth_stencil_view>() ||
@@ -4601,6 +4690,7 @@ void APIENTRY glClearNamedFramebufferuiv(GLuint framebuffer, GLenum buffer, GLin
 }
 void APIENTRY glClearNamedFramebufferfv(GLuint framebuffer, GLenum buffer, GLint drawbuffer, const GLfloat *value)
 {
+	reshade::chams::capture_gl_lifecycle("glClearNamedFramebufferfv", buffer, framebuffer, 0, drawbuffer);
 #if RESHADE_ADDON
 	if (g_opengl_context && (
 		reshade::has_addon_event<reshade::addon_event::clear_depth_stencil_view>() ||
@@ -4626,6 +4716,7 @@ void APIENTRY glClearNamedFramebufferfv(GLuint framebuffer, GLenum buffer, GLint
 }
 void APIENTRY glClearNamedFramebufferfi(GLuint framebuffer, GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil)
 {
+	reshade::chams::capture_gl_lifecycle("glClearNamedFramebufferfi", buffer, framebuffer, 0, drawbuffer);
 #if RESHADE_ADDON
 	if (g_opengl_context &&
 		reshade::has_addon_event<reshade::addon_event::clear_depth_stencil_view>())
@@ -4647,6 +4738,7 @@ void APIENTRY glClearNamedFramebufferfi(GLuint framebuffer, GLenum buffer, GLint
 
 void APIENTRY glBlitNamedFramebuffer(GLuint readFramebuffer, GLuint drawFramebuffer, GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter)
 {
+	reshade::chams::capture_gl_lifecycle("glBlitNamedFramebuffer", mask, readFramebuffer, drawFramebuffer, static_cast<GLint>(filter));
 #if RESHADE_ADDON >= 2
 	if (g_opengl_context && (
 		reshade::has_addon_event<reshade::addon_event::copy_texture_region>() ||
@@ -4726,6 +4818,7 @@ void APIENTRY glBindTextureUnit(GLuint unit, GLuint texture)
 {
 	static const auto trampoline = reshade::hooks::call(glBindTextureUnit);
 	trampoline(unit, texture);
+	reshade::chams::capture_gl_lifecycle("glBindTextureUnit", 0, texture, 0, static_cast<GLint>(unit));
 
 #if RESHADE_ADDON >= 2
 	if (g_opengl_context &&
@@ -4861,6 +4954,7 @@ void APIENTRY glBindFramebufferEXT(GLenum target, GLuint framebuffer)
 {
 	static const auto trampoline = reshade::hooks::call(glBindFramebufferEXT);
 	trampoline(target, framebuffer);
+	reshade::chams::capture_gl_lifecycle("glBindFramebufferEXT", target, framebuffer);
 
 #if RESHADE_ADDON
 	update_framebuffer_object(target, framebuffer);

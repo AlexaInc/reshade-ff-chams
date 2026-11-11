@@ -93,6 +93,29 @@ namespace reshade::chams
 		       mode == GL_TRIANGLE_FAN || mode == GL_QUADS || mode == GL_POLYGON;
 	}
 
+	// Optional lifecycle observations. The IDs below are GL object names in
+	// this context/share group, not persistent identities. Call records alone
+	// do not establish successful execution, GPU completion or frame boundaries.
+	inline void capture_gl_lifecycle(const char *api, GLenum target = 0, GLuint object = 0,
+		GLenum attachment = 0, GLint detail = 0, GLint detail2 = 0) noexcept
+	{
+		if (!capture::runtime_enabled() || g_opengl_context == nullptr) return;
+		try {
+			GLint draw = 0, read = 0, active = 0;
+			if (gl.GetIntegerv) {
+				gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
+				gl.GetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
+				gl.GetIntegerv(GL_ACTIVE_TEXTURE, &active);
+			}
+			char body[512];
+			const int n = std::snprintf(body, sizeof(body),
+				"\"api\":\"%s\",\"phase\":\"observed_call\",\"target\":%u,\"object\":%u,\"attachment\":%u,\"detail\":%d,\"detail2\":%d,\"draw_framebuffer\":%d,\"read_framebuffer\":%d,\"active_texture\":%d",
+				api, static_cast<unsigned>(target), static_cast<unsigned>(object), static_cast<unsigned>(attachment), detail, detail2, draw, read, active);
+			if (n <= 0 || static_cast<size_t>(n) >= sizeof(body)) { capture::runtime_record_loss(); return; }
+			capture::runtime_gl_event(capture::native_context(), capture::native_surface(), body);
+		} catch (...) { capture::runtime_record_loss(); }
+	}
+
 	// -------- character detection cache (uniform lookup is expensive) ----
 	struct program_cache_entry { GLint program; int detect_mode; bool is_character; };
 	struct program_cache { program_cache_entry e[32]; int count; };

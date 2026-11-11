@@ -10,6 +10,9 @@ assert gl.count('&chams_capture_scope')==6
 assert 'source\\chams_capture.cpp' in proj and 'source\\chams_capture.hpp' in proj
 for required in ('runtime_created','runtime_destroyed','runtime_switched','runtime_shared','runtime_present_begin','runtime_present'):
  assert required in wgl
+for api in ('glClear','glBlitFramebuffer','glBindFramebuffer','glFramebufferTexture2D','glFenceSync','glWaitSync','glClientWaitSync','glDeleteSync'):
+ assert api in gl and (api in wgl or api=='glClear')
+assert 'runtime_gl_event' in (r/'source/opengl/opengl_hooks_ffp.cpp').read_text()
 for required in ('Start tracking##capture','Stop tracking##capture','Add marker##capture','capture_status.dropped','capture_status.io_error'):
  assert required in menu
 assert 'CHAMS TRACKING ACTIVE' in overlay
