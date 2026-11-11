@@ -70,6 +70,15 @@ int main()
  { std::ofstream out(ini, std::ios::binary | std::ios::trunc); }
  reset_config(); c::load(); assert(c::s_settings_loaded && read_all(ini).empty());
  c::save(); assert(!read_all(ini).empty());
+
+ // A file held exclusively by another process is not truncated on save.
+ const std::string before_lock = read_all(ini);
+ HANDLE locked = CreateFileW(ini.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+ assert(locked != INVALID_HANDLE_VALUE);
+ c::g_settings.detect_mode = 3;
+ c::save();
+ CloseHandle(locked);
+ assert(read_all(ini) == before_lock);
  reshade::ini_file::clear_cache();
  fs::remove_all(base);
 }
