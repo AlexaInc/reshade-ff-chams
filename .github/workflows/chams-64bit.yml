@@ -9,6 +9,17 @@ permissions:
   contents: read
 
 jobs:
+  mock-rendering-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test Chams GL logic with mock dispatch
+        run: python3 tests/run_mock_gl_tests.py
+      - name: Test config validation
+        run: |
+          g++ -std=c++17 tests/chams_config_validation_test.cpp -o /tmp/chams-config-validation-test
+          printf '[CHAMS]\nEnabled=1\nGlowAlpha=0.55\n' > /tmp/chams-validation.ini
+          /tmp/chams-config-validation-test /tmp/chams-validation.ini
   build:
     runs-on: windows-latest
     timeout-minutes: 90

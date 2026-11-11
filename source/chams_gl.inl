@@ -92,7 +92,7 @@ namespace reshade::chams
 	}
 
 	// -------- character detection cache (uniform lookup is expensive) ----
-	struct program_cache_entry { GLint program; bool is_character; };
+	struct program_cache_entry { GLint program; int detect_mode; bool is_character; };
 	struct program_cache { program_cache_entry e[32]; int count; };
 	inline program_cache &pcache() { static program_cache c = {}; return c; }
 
@@ -181,11 +181,19 @@ namespace reshade::chams
 					o.cand   = o.cand * 0.7f + o.frame_min * 0.3f;
 					o.stable = (o.stable < 1000) ? o.stable + 1 : 1000;
 				}
+				// Only accept consecutive plausible observations. This distance is
+				// still a heuristic and cannot establish player ownership.
+				if (o.stable >= 30)
+					o.own_est = o.cand;
 			}
-			// Only accept the estimate after many stable frames, so a single
-			// frame with a nearby enemy cannot flip the estimate.
-			if (o.stable >= 30)
-				o.own_est = o.cand;
+			else
+			{
+				// An out-of-range minimum interrupts the sequence; retaining an
+				// old estimate here could hide a later, unrelated draw.
+				o.cand = -1.0f;
+				o.stable = 0;
+				o.own_est = -1.0f;
+			}
 		}
 		else
 		{
@@ -282,7 +290,7 @@ namespace reshade::chams
 
 		program_cache &c = pcache();
 		for (int i = 0; i < c.count; ++i)
-			if (c.e[i].program == program)
+			if (c.e[i].program == program && c.e[i].detect_mode == g_settings.detect_mode)
 				return c.e[i].is_character;
 
 		const bool has_chara = gl.GetUniformLocation(static_cast<GLuint>(program),
@@ -312,6 +320,7 @@ namespace reshade::chams
 
 		if (c.count < 32) {
 			c.e[c.count].program = program;
+			c.e[c.count].detect_mode = g_settings.detect_mode;
 			c.e[c.count].is_character = has;
 			++c.count;
 		}

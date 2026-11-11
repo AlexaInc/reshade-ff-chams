@@ -5,11 +5,12 @@ root = pathlib.Path(__file__).resolve().parents[1]
 s = (root/'source/chams_gl.inl').read_text() + (root/'source/chams_overlay.inl').read_text()
 tokens = sorted(set(re.findall(r'\bGL_[A-Z0-9_]+\b', s)) - {'GL_TRUE','GL_FALSE'})
 names = sorted(set(re.findall(r'\bgl\.([A-Za-z0-9_]+)', s)))
-custom = {'GetIntegerv','GetBooleanv','GetFloatv','IsEnabled','Enable','Disable','ColorMask','DepthMask','DepthFunc','DepthRange','BlendFuncSeparate','BlendFunc','BlendEquationSeparate','BlendEquation','BlendColor','LineWidth','PolygonMode','PolygonOffset','Scissor','ActiveTexture','BindTexture','BindFramebuffer','UseProgram','BindVertexArray','BindBuffer','Viewport','ClearColor'}
+custom = {'GetUniformLocation','GetIntegerv','GetBooleanv','GetFloatv','IsEnabled','Enable','Disable','ColorMask','DepthMask','DepthFunc','DepthRange','BlendFuncSeparate','BlendFunc','BlendEquationSeparate','BlendEquation','BlendColor','LineWidth','PolygonMode','PolygonOffset','Scissor','ActiveTexture','BindTexture','BindFramebuffer','UseProgram','BindVertexArray','BindBuffer','Viewport','ClearColor'}
 head = '''#include <cstddef>
 #include <map>
 #include <array>
 #include <cassert>
+#include <cstring>
 using GLenum=unsigned; using GLuint=unsigned; using GLint=int; using GLsizei=int; using GLboolean=unsigned char; using GLfloat=float;
 #define GL_FALSE 0
 #define GL_TRUE 1
@@ -34,10 +35,12 @@ void sc(int a,int b,int c,int d){ints[GL_SCISSOR_BOX]={a,b,c,d};} void at(unsign
 void fb(unsigned target,unsigned x){if(target==GL_FRAMEBUFFER||target==GL_DRAW_FRAMEBUFFER)ints[GL_DRAW_FRAMEBUFFER_BINDING][0]=x;if(target==GL_FRAMEBUFFER||target==GL_READ_FRAMEBUFFER)ints[GL_READ_FRAMEBUFFER_BINDING][0]=x;}
 void up(unsigned x){ints[GL_CURRENT_PROGRAM][0]=x;} void va(unsigned x){ints[GL_VERTEX_ARRAY_BINDING][0]=x;} void bb(unsigned,unsigned x){ints[GL_ARRAY_BUFFER_BINDING][0]=x;}
 void vp(int a,int b,int c,int d){ints[GL_VIEWPORT]={a,b,c,d};} void cc(float a,float b,float c,float d){floats[GL_COLOR_CLEAR_VALUE]={a,b,c,d};}
+int uniform_location(unsigned program,const char *name){return program==123 && std::strcmp(name,"_DiffIntensity")==0 ? 7 : -1;}
 struct GL {
 '''
 head += ''.join('Any '+n+';\n' for n in names if n not in custom)
 head += '''
+decltype(&uniform_location) GetUniformLocation=uniform_location;
 decltype(&gi) GetIntegerv=gi; decltype(&gb) GetBooleanv=gb; decltype(&gf) GetFloatv=gf;
 decltype(&is) IsEnabled=is; decltype(&en) Enable=en; decltype(&dis) Disable=dis;
 decltype(&cm) ColorMask=cm; decltype(&dm) DepthMask=dm; decltype(&df) DepthFunc=df; decltype(&dr) DepthRange=dr;
@@ -65,10 +68,18 @@ int main() {
  assert(ints==original_i);assert(floats==original_f);assert(enabled==original_e);
  own()=own_track{}; for(int i=0;i<30;i++){own().frame_min=2.17f;update_own_estimate();} assert(own().stable==30);assert(own().own_est>2.16f&&own().own_est<2.18f);
  update_own_estimate(); assert(own().own_est<0 && own().stable==0);
+ own()=own_track{}; for(int i=0;i<29;i++){own().frame_min=2.17f;update_own_estimate();}
+ own().frame_min=1.0f; update_own_estimate(); assert(own().stable==0 && own().own_est<0);
+ own().frame_min=2.17f;update_own_estimate();assert(own().stable==1 && own().own_est<0);
+ for(int i=1;i<30;i++){own().frame_min=2.17f;update_own_estimate();}
+ assert(own().own_est>0);own().frame_min=8.0f;update_own_estimate();assert(own().own_est<0 && own().stable==0);
+ pcache().count=0;g_settings.detect_mode=0;assert(!program_is_character(123));
+ g_settings.detect_mode=1;assert(program_is_character(123));
+ g_settings.detect_mode=0;assert(!program_is_character(123));
 }
 '''
 with tempfile.TemporaryDirectory() as d:
  p=pathlib.Path(d)/'mock.cpp';p.write_text(head);exe=pathlib.Path(d)/'test'
  subprocess.run(['g++','-std=c++17','-O0',str(p),'-o',str(exe)],check=True)
  subprocess.run([str(exe)],check=True)
-print('PASS: state guard and direct wire state round trips; own tracker stable/empty frames; full chams inline code compiled against mock GL')
+print('PASS: GL state round trips; tracker interrupted sequences; Strict/Wide cache mode switch; full inline code compiled against mock GL')
