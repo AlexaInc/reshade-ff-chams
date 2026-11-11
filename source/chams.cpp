@@ -147,6 +147,10 @@ namespace reshade::chams
 
 	void dump_line(const char *text)
 	{
+		// Several GL contexts can log from different threads. Serialize the
+		// open and both writes so a line and its terminator cannot interleave.
+		static std::mutex dump_mutex;
+		const std::lock_guard<std::mutex> lock(dump_mutex);
 		open_dump_file();
 
 		if (s_dump_file == INVALID_HANDLE_VALUE)

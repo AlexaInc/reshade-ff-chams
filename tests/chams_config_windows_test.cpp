@@ -6,6 +6,9 @@
 #include <iterator>
 #include <cassert>
 #include <string>
+#include <thread>
+#include <vector>
+#include <unordered_set>
 
 static std::wstring test_appdata;
 static HRESULT WINAPI test_appdata_path(HWND, int, HANDLE, DWORD, LPWSTR out)
@@ -14,8 +17,17 @@ static HRESULT WINAPI test_appdata_path(HWND, int, HANDLE, DWORD, LPWSTR out)
  wcscpy_s(out, MAX_PATH, test_appdata.c_str());
  return S_OK;
 }
+static DWORD WINAPI test_temp_path(DWORD size, LPWSTR out)
+{
+ const std::wstring path = test_appdata + L"\\";
+ if (size <= path.size()) return static_cast<DWORD>(path.size() + 1);
+ wcscpy_s(out, size, path.c_str());
+ return static_cast<DWORD>(path.size());
+}
 #define SHGetFolderPathW test_appdata_path
+#define GetTempPathW test_temp_path
 #include "../source/chams.cpp"
+#undef GetTempPathW
 #undef SHGetFolderPathW
 namespace reshade::log { void message(level, const char *, ...) {} }
 std::filesystem::path g_reshade_dll_path, g_reshade_base_path, g_target_executable_path;
@@ -79,6 +91,31 @@ int main()
  c::save();
  CloseHandle(locked);
  assert(read_all(ini) == before_lock);
+
+ // Real concurrent dump writes must remain complete CRLF-terminated records.
+ // GetTempPathW is redirected above so this cannot truncate a user's dump.
+ std::vector<std::thread> writers;
+ for (int t = 0; t < 4; ++t)
+  writers.emplace_back([t] {
+   for (int i = 0; i < 100; ++i) {
+    const std::string line = "writer=" + std::to_string(t) + ",line=" + std::to_string(i);
+    c::dump_line(line.c_str());
+   }
+  });
+ for (auto &writer : writers) writer.join();
+ assert(c::s_dump_file != INVALID_HANDLE_VALUE);
+ CloseHandle(c::s_dump_file); c::s_dump_file = INVALID_HANDLE_VALUE;
+ const std::string log = read_all(base / L"chams-dump.txt");
+ std::unordered_set<std::string> actual;
+ size_t pos = 0, count = 0;
+ while (pos < log.size()) {
+  const auto end = log.find("\r\n", pos); assert(end != std::string::npos);
+  actual.insert(log.substr(pos, end - pos)); pos = end + 2; ++count;
+ }
+ assert(count == 400 && actual.size() == 400);
+ for (int t = 0; t < 4; ++t)
+  for (int i = 0; i < 100; ++i)
+   assert(actual.count("writer=" + std::to_string(t) + ",line=" + std::to_string(i)) == 1);
  reshade::ini_file::clear_cache();
  fs::remove_all(base);
 }
