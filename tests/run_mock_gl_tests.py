@@ -11,6 +11,8 @@ head = '''#include <cstddef>
 #include <array>
 #include <cassert>
 #include <cstring>
+#include <string>
+#include <vector>
 using GLenum=unsigned; using GLuint=unsigned; using GLint=int; using GLsizei=int; using GLboolean=unsigned char; using GLfloat=float;
 #define GL_FALSE 0
 #define GL_TRUE 1
@@ -53,7 +55,8 @@ void *g_opengl_context=nullptr;
 '''
 head += '#include "'+str(root/'source/chams_gl.inl')+'"\n'
 head += r'''
-namespace reshade::chams { settings g_settings; bool g_overlay_open=false; int g_budget_left=110; unsigned g_frame_id=1; void dump_line(const char*){} void ensure_loaded(){} }
+std::vector<std::string> captured_lines;
+namespace reshade::chams { settings g_settings; bool g_overlay_open=false; int g_budget_left=110; unsigned g_frame_id=1; void dump_line(const char *line){ captured_lines.emplace_back(line); } void ensure_loaded(){} }
 namespace reshade::log { void message(level,const char*,...){} }
 int main() {
  using namespace reshade::chams;
@@ -76,6 +79,26 @@ int main() {
  pcache().count=0;g_settings.detect_mode=0;assert(!program_is_character(123));
  g_settings.detect_mode=1;assert(program_is_character(123));
  g_settings.detect_mode=0;assert(!program_is_character(123));
+ // Actual wrapper: budget-exhausted calls remain exactly one original draw,
+ // with a per-frame summary only when Dump ALL is enabled.
+ captured_lines.clear();g_settings=settings{};g_settings.dump_all=true;
+ g_opengl_context=reinterpret_cast<void *>(1);g_budget_left=0;g_frame_id=100;
+ int originals=0;draw_chams(GL_TRIANGLES,200,[&]{++originals;});
+ assert(originals==1 && captured_lines.empty());
+ g_frame_id=101;draw_chams(GL_TRIANGLES,200,[&]{++originals;});
+ assert(originals==2 && captured_lines.size()==1);
+ assert(captured_lines[0].find("[CHAMS-FRAME] f=100")!=std::string::npos);
+ assert(captured_lines[0].find("calls=1")!=std::string::npos && captured_lines[0].find("budget=1")!=std::string::npos);
+ g_settings.dump_all=false;g_frame_id=102;draw_chams(GL_TRIANGLES,200,[&]{++originals;});
+ assert(originals==3 && captured_lines.size()==1);
+ // Summaries are bounded and segmented when the context changes.
+ frame_trace bounded;int emitted=0;auto emit=[&](const char*){++emitted;};
+ for(unsigned i=0;i<1900;i++) assert(bounded.enter(true,reinterpret_cast<void *>(1),i,1,1,false,emit));
+ assert(emitted==1800);
+ assert(!bounded.enter(false,nullptr,1900,1,1,false,emit));
+ assert(bounded.enter(true,reinterpret_cast<void *>(1),1901,0,1,true,emit));
+ assert(bounded.enter(true,reinterpret_cast<void *>(2),1901,0,1,true,emit));
+ assert(emitted==1801);
 }
 '''
 with tempfile.TemporaryDirectory() as d:

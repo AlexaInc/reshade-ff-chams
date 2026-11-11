@@ -114,10 +114,9 @@ void reshade::runtime::draw_gui_chams()
 			if (s.dump_all)
 			{
 				ImGui::TextWrapped("%s",
-					"Logs every single draw call (mode, count, program, uniforms), including "
-					"the ones the chams filter skips - use this when a hair / glove / skin "
-					"piece is not getting chams. 3000 lines, then it stops by itself. "
-					"Turn it off as soon as you have the file, it makes the log big.");
+					"Logs up to 3000 eligible wrapped draw calls plus bounded per-frame "
+					"decision counts (including budget skips). It cannot identify objects, "
+					"and logging may affect performance. Turn it off after capturing.");
 			}
 		}
 	}

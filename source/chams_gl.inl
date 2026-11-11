@@ -74,6 +74,7 @@
 #pragma once
 
 #include "chams.hpp"
+#include "chams_trace.hpp"
 
 #include "dll_log.hpp"
 
@@ -1041,6 +1042,9 @@ namespace reshade::chams
 	// draw_chams() below can capture into it; it needs every helper above
 #include "chams_overlay.inl"
 
+	// Shared by all draw-wrapper template instantiations on this thread.
+	inline frame_trace &draw_trace() { static thread_local frame_trace trace; return trace; }
+
 	// --------------------------------------------------------------- wrapper
 	template <typename F>
 	inline void draw_chams(GLenum mode, GLsizei count, F &&real_draw)
@@ -1049,14 +1053,30 @@ namespace reshade::chams
 			ensure_loaded();
 		settings &s = g_settings;
 
+		// Count wrapper decisions only while Dump ALL is enabled. Counters are
+		// per-thread and per-context segment; they do not imply object identity.
+		frame_trace &trace = draw_trace();
+		frame_trace *diag = trace.enter(s.dump_all, g_opengl_context, g_frame_id,
+			s.detect_mode, s.render_mode, s.hide_own,
+			[](const char *line) { dump_line(line); }) ? &trace : nullptr;
+
 		if (!s.enabled || g_opengl_context == nullptr || g_overlay_open ||
 			g_budget_left <= 0 || !is_solid_primitive(mode) || count <= 0)
 		{
+			if (diag != nullptr)
+			{
+				// Reason counters overlap when multiple gates are closed.
+				if (!s.enabled) ++diag->disabled;
+				if (g_overlay_open) ++diag->menu;
+				if (g_budget_left <= 0) ++diag->budget;
+				if (!is_solid_primitive(mode) || count <= 0) ++diag->primitive;
+			}
 			real_draw();
 			return;
 		}
 
 		touch_frame();
+		if (diag != nullptr) { diag->own_est = own().own_est; diag->own_stable = own().stable; }
 
 		// When switching between Direct and Overlay modes, reset the overlay
 		// state so the mask is always cleared on the first overlay frame.
@@ -1116,19 +1136,23 @@ namespace reshade::chams
 
 		if (mode != GL_TRIANGLES || count < k_min_index_count)
 		{
+			if (diag != nullptr) ++diag->filtered;
 			real_draw();
 			return;
 		}
 
 		if (!program_is_character(program))
 		{
+			if (diag != nullptr) ++diag->filtered;
 			real_draw();
 			return;
 		}
+		if (diag != nullptr) ++diag->matched;
 
 		program_info *info = get_program_info(program);
 		if (info == nullptr)
 		{
+			if (diag != nullptr) ++diag->no_info;
 			real_draw();
 			return;
 		}
@@ -1167,6 +1191,7 @@ namespace reshade::chams
 			const bool at_my_dist = confident && std::fabs(dist - o.own_est) <= 0.2f;
 			if (in_range && at_my_dist)
 			{
+				if (diag != nullptr) ++diag->own_hidden;
 				real_draw();
 				return;
 			}
@@ -1182,6 +1207,7 @@ namespace reshade::chams
 		const bool want_wire   = s.wire   && s.wire_alpha   > 0.0f;
 		if (!want_glow && !want_stroke && !want_wire)
 		{
+			if (diag != nullptr) ++diag->no_effect;
 			real_draw();
 			return;
 		}
@@ -1239,8 +1265,16 @@ namespace reshade::chams
 			overlay_captured = g2.has_mask && g2.captured_frame == g_frame_id;
 			restore_state(st);
 			if (overlay_captured)
+			{
+				if (diag != nullptr) ++diag->overlay;
 				return;   // overlay path succeeded: Direct mode passes not needed
+			}
 			// overlay capture did not happen -> fall through to Direct mode below
+		}
+		if (diag != nullptr)
+		{
+			++diag->direct;
+			if (s.render_mode == 0) ++diag->overlay_failed;
 		}
 
 		// ---- 2. GLOW / HIGHLIGHT: four modes (menu: "Player highlight") -----
