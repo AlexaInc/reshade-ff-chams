@@ -474,8 +474,9 @@ namespace reshade::chams
 		GLboolean depth_mask  = GL_TRUE;
 		GLboolean color_mask[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
 		GLint     depth_func  = GL_LESS;
-		GLint     blend_src   = GL_ONE;
-		GLint     blend_dst   = GL_ZERO;
+		GLint     blend_src_rgb = GL_ONE, blend_dst_rgb = GL_ZERO;
+		GLint     blend_src_a = GL_ONE, blend_dst_a = GL_ZERO;
+		GLfloat   line_width = 1.0f;
 		GLint     blend_eq_rgb = GL_FUNC_ADD;   // the overlay uses GL_MAX for the line
 		GLint     blend_eq_a   = GL_FUNC_ADD;
 		GLint     polygon_mode[2] = { GL_FILL, GL_FILL };
@@ -501,8 +502,11 @@ namespace reshade::chams
 		st.depth_mask = mask;
 		gl.GetBooleanv(GL_COLOR_WRITEMASK, st.color_mask);
 		gl.GetIntegerv(GL_DEPTH_FUNC, &st.depth_func);
-		gl.GetIntegerv(GL_BLEND_SRC, &st.blend_src);
-		gl.GetIntegerv(GL_BLEND_DST, &st.blend_dst);
+		gl.GetIntegerv(GL_BLEND_SRC_RGB, &st.blend_src_rgb);
+		gl.GetIntegerv(GL_BLEND_DST_RGB, &st.blend_dst_rgb);
+		gl.GetIntegerv(GL_BLEND_SRC_ALPHA, &st.blend_src_a);
+		gl.GetIntegerv(GL_BLEND_DST_ALPHA, &st.blend_dst_a);
+		gl.GetFloatv(GL_LINE_WIDTH, &st.line_width);
 		gl.GetIntegerv(GL_BLEND_EQUATION_RGB, &st.blend_eq_rgb);
 		gl.GetIntegerv(GL_BLEND_EQUATION_ALPHA, &st.blend_eq_a);
 		gl.GetIntegerv(GL_POLYGON_MODE, st.polygon_mode);
@@ -526,7 +530,9 @@ namespace reshade::chams
 		gl.DepthMask(st.depth_mask);
 		gl.DepthFunc(static_cast<GLenum>(st.depth_func));
 		gl.DepthRange(st.depth_range[0], st.depth_range[1]);
-		gl.BlendFunc(static_cast<GLenum>(st.blend_src), static_cast<GLenum>(st.blend_dst));
+		gl.BlendFuncSeparate(static_cast<GLenum>(st.blend_src_rgb), static_cast<GLenum>(st.blend_dst_rgb),
+		                     static_cast<GLenum>(st.blend_src_a), static_cast<GLenum>(st.blend_dst_a));
+		gl.LineWidth(st.line_width);
 		gl.BlendColor(st.blend_color[0], st.blend_color[1], st.blend_color[2], st.blend_color[3]);
 		gl.BlendEquationSeparate(static_cast<GLenum>(st.blend_eq_rgb), static_cast<GLenum>(st.blend_eq_a));
 		gl.PolygonMode(GL_FRONT_AND_BACK, static_cast<GLenum>(st.polygon_mode[0]));
@@ -542,6 +548,7 @@ namespace reshade::chams
 	inline void begin_tint(const float colour[3], float strength)
 	{
 		gl.Enable(GL_BLEND);
+		gl.BlendEquation(GL_FUNC_ADD);
 		gl.BlendFunc(GL_ONE, GL_CONSTANT_COLOR);
 		gl.BlendColor(colour[0] * strength, colour[1] * strength, colour[2] * strength, 1.0f);
 		gl.Enable(GL_DEPTH_TEST);
@@ -586,6 +593,7 @@ namespace reshade::chams
 	inline void blend_fill(GLenum depth_func, const float colour[3], float strength, F &&real_draw)
 	{
 		gl.Enable(GL_BLEND);
+		gl.BlendEquation(GL_FUNC_ADD);
 		gl.BlendFunc(GL_CONSTANT_COLOR, GL_ONE_MINUS_CONSTANT_COLOR);
 		gl.BlendColor(colour[0] * strength, colour[1] * strength, colour[2] * strength, 1.0f);
 		gl.Enable(GL_DEPTH_TEST);
@@ -835,11 +843,14 @@ namespace reshade::chams
 		std::snprintf(line, sizeof(line),
 			"[CHAMS-DUMP] f=%u prog=%d count=%d dist=%.2f own=%d src=%s "
 			"world=(%.2f,%.2f,%.2f) cam=(%.2f,%.2f,%.2f) chara_uniform=%d "
-			"ownest=%.2f match=%s uniforms=[%s]",
+			"ownest=%.2f stable=%d hideown=%d hidden=%d detect=%d render=%d budget=%d match=%s uniforms=[%s]",
 			g_frame_id, program, count, dist,
 			(dist >= 0.0f && dist < g_settings.own_distance) ? 1 : 0, p.dist_source,
 			p.world[12], p.world[13], p.world[14], cam[0], cam[1], cam[2],
-			has_uniform ? 1 : 0, own().own_est, character_token(program), uniforms);
+			has_uniform ? 1 : 0, own().own_est, own().stable, g_settings.hide_own ? 1 : 0,
+			(g_settings.hide_own && dist >= 0.0f && own().own_est > 0.0f && own().stable >= 30 &&
+			 dist < g_settings.own_distance && std::fabs(dist - own().own_est) <= 0.2f) ? 1 : 0,
+			g_settings.detect_mode, g_settings.render_mode, g_budget_left, character_token(program), uniforms);
 
 		dump_line(line);
 	}
@@ -1025,6 +1036,8 @@ namespace reshade::chams
 	template <typename F>
 	inline void draw_chams(GLenum mode, GLsizei count, F &&real_draw)
 	{
+		if (g_opengl_context != nullptr)
+			ensure_loaded();
 		settings &s = g_settings;
 
 		if (!s.enabled || g_opengl_context == nullptr || g_overlay_open ||
@@ -1047,8 +1060,7 @@ namespace reshade::chams
 			overlay_gpu &g = ov();
 			g.captured_frame = 0xFFFFFFFFu;
 			g.has_mask = false;
-			g.tried = false;          // allow a fresh build attempt on next overlay switch
-			g.ready = false;
+			// Reuse the existing GL objects when switching modes.
 			s_prev_render_mode = s.render_mode;
 			// Pre-build the overlay renderer when switching TO overlay mode, so
 			// shader compilation happens during rendering (not during wglSwapBuffers

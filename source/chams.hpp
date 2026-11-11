@@ -156,5 +156,6 @@ namespace reshade::chams
 	void render_overlay();   // composites the player mask on top of the finished frame
 	void poll_hotkey();      // F8: master switch on/off
 	void load();
+	void ensure_loaded();  // apply saved settings before the first chams draw
 	void save();
 }

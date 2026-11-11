@@ -100,6 +100,47 @@ void main()
 }
 )";
 
+	// Preserve bindings as well as raster state: these functions run inside the
+	// application's context, including during first-use allocation and resize.
+	struct overlay_state_guard
+	{
+		GLint draw_fbo = 0, read_fbo = 0, program = 0, vao = 0, array_buffer = 0;
+		GLint active_texture = GL_TEXTURE0, active_binding = 0, texture0_binding = 0;
+		GLint vp[4] = {};
+		GLfloat clear_color[4] = {};
+		saved_state st;
+		overlay_state_guard() : st(save_state())
+		{
+			gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_fbo);
+			gl.GetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_fbo);
+			gl.GetIntegerv(GL_CURRENT_PROGRAM, &program);
+			gl.GetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
+			gl.GetIntegerv(GL_ARRAY_BUFFER_BINDING, &array_buffer);
+			gl.GetIntegerv(GL_ACTIVE_TEXTURE, &active_texture);
+			gl.GetIntegerv(GL_TEXTURE_BINDING_2D, &active_binding);
+			gl.ActiveTexture(GL_TEXTURE0);
+			gl.GetIntegerv(GL_TEXTURE_BINDING_2D, &texture0_binding);
+			gl.ActiveTexture(static_cast<GLenum>(active_texture));
+			gl.GetIntegerv(GL_VIEWPORT, vp);
+			gl.GetFloatv(GL_COLOR_CLEAR_VALUE, clear_color);
+		}
+		~overlay_state_guard()
+		{
+			gl.UseProgram(static_cast<GLuint>(program));
+			gl.BindVertexArray(static_cast<GLuint>(vao));
+			gl.BindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(array_buffer));
+			gl.ActiveTexture(GL_TEXTURE0);
+			gl.BindTexture(GL_TEXTURE_2D, static_cast<GLuint>(texture0_binding));
+			gl.ActiveTexture(static_cast<GLenum>(active_texture));
+			gl.BindTexture(GL_TEXTURE_2D, static_cast<GLuint>(active_binding));
+			gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(draw_fbo));
+			gl.BindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(read_fbo));
+			gl.Viewport(vp[0], vp[1], vp[2], vp[3]);
+			gl.ClearColor(clear_color[0], clear_color[1], clear_color[2], clear_color[3]);
+			restore_state(st);
+		}
+	};
+
 	inline bool overlay_build()
 	{
 		overlay_gpu &g = ov();
@@ -110,7 +151,7 @@ void main()
 		// Shader compilation and framebuffer creation must happen only once,
 		// on mode switch. Retrying every few frames causes repeated GPU stalls
 		// during rendering which freezes the game frame. If the build fails,
-		// render_overlay() falls back to Direct mode after 5 failures.
+		// Failed capture falls back to the direct per-draw path.
 		g.tried = true;
 
 		if (gl.GenFramebuffers == nullptr || gl.CreateShader == nullptr ||
@@ -120,6 +161,8 @@ void main()
 				"[CHAMS] overlay renderer unavailable (old GL context) - using the direct renderer");
 			return false;
 		}
+
+		overlay_state_guard guard;
 
 		// ---- shader program -------------------------------------------------
 		const auto compile = [](GLenum type, const char *src) -> GLuint {
@@ -143,7 +186,11 @@ void main()
 		const GLuint vs = compile(GL_VERTEX_SHADER, k_ov_vs);
 		const GLuint fs = compile(GL_FRAGMENT_SHADER, k_ov_fs);
 		if (vs == 0 || fs == 0)
+		{
+			if (vs != 0) gl.DeleteShader(vs);
+			if (fs != 0) gl.DeleteShader(fs);
 			return false;
+		}
 
 		g.program = gl.CreateProgram();
 		gl.AttachShader(g.program, vs);
@@ -225,6 +272,10 @@ void main()
 
 		g.width = w;
 		g.height = h;
+		// A newly allocated image has no valid contents, even if this frame
+		// already captured meshes at a different viewport size.
+		g.captured_frame = 0xFFFFFFFFu;
+		g.has_mask = false;
 		return true;
 	}
 
@@ -244,11 +295,10 @@ void main()
 		gl.GetIntegerv(GL_VIEWPORT, vp);
 		if (vp[2] <= 0 || vp[3] <= 0)
 			return;
+		overlay_state_guard guard;
 		if (!overlay_ensure_size(vp[2], vp[3]))
 			return;
 
-		GLint prev_fbo = 0;
-		gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_fbo);
 
 		const bool first_this_frame = (g.captured_frame != g_frame_id);
 
@@ -264,6 +314,7 @@ void main()
 
 		if (first_this_frame)
 		{
+			gl.ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 			gl.ClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 			gl.Clear(GL_COLOR_BUFFER_BIT);
 			g.captured_frame = g_frame_id;
@@ -279,64 +330,9 @@ void main()
 		gl.DepthMask(GL_FALSE);
 		gl.PolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
-		// Save ALL GL state before modifying it for mask rendering. This is
-		// critical: without it, the game's subsequent draws happen with depth
-		// test / cull / blend disabled, which breaks rendering and can cause
-		// a black screen when switching between Direct and Overlay modes.
-		const saved_state st = save_state();
-
-		gl.Disable(GL_DEPTH_TEST);
-		gl.Disable(GL_CULL_FACE);
-		gl.Enable(GL_BLEND);
-		gl.BlendEquation(GL_FUNC_ADD);
-		gl.BlendFunc(GL_ONE, GL_ONE);                 // accumulate coverage
-		gl.ColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);   // alpha only
-		gl.DepthMask(GL_FALSE);
-		gl.PolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-
 		real_draw();
 
-		// Restore ALL GL state so the game's next draw is unaffected.
-		restore_state(st);
-
-		gl.ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-		gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(prev_fbo));
-		gl.Viewport(vp[0], vp[1], vp[2], vp[3]);
 	}
-
-	// RAII guard: restores GL state when leaving render_overlay(), even on error.
-	struct overlay_state_guard
-	{
-		GLint      prev_fbo = 0;
-		GLint      prev_program = 0;
-		GLint      prev_vao = 0;
-		GLint      vp[4] = { 0, 0, 0, 0 };
-		saved_state st;
-		bool       active = false;
-
-		void capture()
-		{
-			gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_fbo);
-			gl.GetIntegerv(GL_VIEWPORT, vp);
-			gl.GetIntegerv(GL_CURRENT_PROGRAM, &prev_program);
-			gl.GetIntegerv(GL_VERTEX_ARRAY_BINDING, &prev_vao);
-			st = save_state();
-			active = true;
-		}
-
-		~overlay_state_guard()
-		{
-			if (!active) return;
-			// Always restore the program and VAO first - the next frame's draws
-			// depend on them being valid (program 0 / VAO 0 would black the screen).
-			gl.UseProgram(static_cast<GLuint>(prev_program));
-			gl.BindVertexArray(static_cast<GLuint>(prev_vao));
-			gl.BindTexture(GL_TEXTURE_2D, 0);
-			restore_state(st);
-			gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(prev_fbo));
-			gl.Viewport(vp[0], vp[1], vp[2], vp[3]);
-		}
-	};
 
 	// ---------------------------------------------------------------- composite
 	// Called once per frame, right before the swap, with the game's final image
@@ -345,28 +341,15 @@ void main()
 	{
 		overlay_gpu &g = ov();
 
-		if (g_settings.render_mode != 0 || !g_settings.enabled || g_overlay_open)
+		if (g_opengl_context == nullptr || g_settings.render_mode != 0 || !g_settings.enabled || g_overlay_open)
 			return;
 		// overlay_build() must NOT be called here (during wglSwapBuffers) because
 		// it may compile shaders, which stalls the GPU pipeline and freezes the
 		// game frame. Pre-building happens in draw_chams() when switching to
 		// overlay mode. If not ready yet, skip this frame.
+		// An empty frame is normal (e.g. lobby transition), not a renderer failure.
 		if (!g.tried || !g.ready || !g.has_mask || g.captured_frame != g_frame_id)
-		{
-			// Consecutive overlay failures: auto-fallback to Direct mode so the
-			// user is never stuck with broken chams or a frozen screen.
-			static int s_overlay_fail = 0;
-			if (++s_overlay_fail > 5)
-			{
-				s_overlay_fail = 0;
-				g_settings.render_mode = 1;   // Direct mode is the safe default
-				reshade::log::message(reshade::log::level::warning,
-					"[CHAMS] overlay renderer failed repeatedly - auto-switched to Direct mode");
-			}
 			return;
-		}
-		static int s_overlay_fail = 0;
-		s_overlay_fail = 0;   // reset on success
 
 		const settings &s = g_settings;
 		const bool want_glow   = s.glow;
@@ -375,9 +358,8 @@ void main()
 			return;
 
 		overlay_state_guard guard;
-		guard.capture();
 
-		gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(guard.prev_fbo));
+		gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(guard.draw_fbo));
 		gl.Viewport(0, 0, g.width, g.height);
 
 		gl.Disable(GL_DEPTH_TEST);

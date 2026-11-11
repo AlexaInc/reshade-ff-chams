@@ -6,12 +6,17 @@
 #include "chams.hpp"
 #include "ini_file.hpp"
 #include "dll_log.hpp"
+#include "chams_config_validation.hpp"
 
 #include <Windows.h>   // GetAsyncKeyState, CreateFileW, GetTempPathW, SHGetFolderPath
 #include <Shlobj.h>    // SHGetFolderPath, CSIDL_APPDATA
 #include <algorithm>
 #include <cstring>
 #include <cwchar>     // wcscat_s
+#include <mutex>      // call_once
+#include <fstream>
+#include <iterator>
+#include <filesystem>
 
 namespace reshade::chams
 {
@@ -37,39 +42,64 @@ namespace reshade::chams
 	// survive emulator reinstalls and are not blocked by read-only game
 	// folders (Program Files, etc.).
 	static std::wstring s_chams_config_path;
+	static bool s_settings_loaded = false;
 
-	static void build_chams_config_path()
+	// Do not cache a failed directory creation: a later save may succeed after
+	// permissions are corrected. Never redirect an inaccessible existing file.
+	static bool build_chams_config_path()
 	{
-		if (!s_chams_config_path.empty())
-			return;
-
-		wchar_t appdata[MAX_PATH] = {};
-		if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata)))
+		if (s_chams_config_path.empty())
 		{
-			s_chams_config_path = appdata;
+			wchar_t base[MAX_PATH] = {};
+			if (!SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, base)))
+			{
+				const DWORD len = GetTempPathW(MAX_PATH, base);
+				if (len == 0 || len >= MAX_PATH) return false;
+			}
+			if (base[0] == L'\0') return false;
+			s_chams_config_path = (std::filesystem::path(base) / L"reshade" / L"chams" / L"chams.ini").wstring();
 		}
-		else
+		const std::filesystem::path dir = std::filesystem::path(s_chams_config_path).parent_path();
+		std::error_code ec;
+		std::filesystem::create_directories(dir, ec);
+		if (ec || !std::filesystem::is_directory(dir, ec) || ec)
 		{
-			// fallback: use the TEMP path
-			DWORD len = GetTempPathW(MAX_PATH, appdata);
-			if (len == 0 || len >= MAX_PATH)
-				return;
-			s_chams_config_path = appdata;
+			reshade::log::message(reshade::log::level::warning,
+				"[CHAMS] Cannot create or access settings directory (error %d).", ec.value());
+			return false;
 		}
+		return true;
+	}
 
-		if (s_chams_config_path.back() != L'\\')
-			s_chams_config_path += L'\\';
-		s_chams_config_path += L"reshade\\chams\\chams.ini";
-
-		// create the directory (reshade/chams) if it does not exist
-		std::wstring dir = s_chams_config_path;
-		dir = dir.substr(0, dir.find_last_of(L'\\'));
-		CreateDirectoryW(dir.c_str(), nullptr);
+	// A malformed or unreadable file is not treated as an absent file. In
+	// particular, never truncate it merely because parsing failed.
+	static bool config_file_safe()
+	{
+		if (!build_chams_config_path()) return false;
+		const std::filesystem::path path(s_chams_config_path);
+		std::error_code ec;
+		const bool exists = std::filesystem::exists(path, ec);
+		if (ec) { reshade::log::message(reshade::log::level::warning, "[CHAMS] Cannot inspect settings file (error %d).", ec.value()); return false; }
+		if (!exists) return true;
+		const auto size = std::filesystem::file_size(path, ec);
+		if (ec || size > 1024 * 1024)
+		{
+			reshade::log::message(reshade::log::level::warning, "[CHAMS] Settings file inaccessible or too large; not overwriting it.");
+			return false;
+		}
+		std::ifstream file(path, std::ios::binary);
+		if (!file) { reshade::log::message(reshade::log::level::warning, "[CHAMS] Cannot read settings file; not overwriting it."); return false; }
+		const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+		if (file.bad() || text.size() != size || !valid_config_text(text))
+		{
+			reshade::log::message(reshade::log::level::warning, "[CHAMS] Invalid or unreadable settings file; not overwriting it.");
+			return false;
+		}
+		return true;
 	}
 
 	static ini_file &chams_config()
 	{
-		build_chams_config_path();
 		return ini_file::load_cache(std::filesystem::path(s_chams_config_path));
 	}
 
@@ -78,13 +108,13 @@ namespace reshade::chams
 		DWORD len = GetTempPathW(MAX_PATH, out);
 		if (len == 0 || len >= MAX_PATH)
 		{
-			out[0] = L'\\0';
+			out[0] = L'\0';
 			return;
 		}
 		if (out[len - 1] != L'\\')
 		{
 			out[len]     = L'\\';
-			out[len + 1] = L'\\0';
+			out[len + 1] = L'\0';
 		}
 		wcscat_s(out, MAX_PATH, L"chams-dump.txt");
 	}
@@ -96,7 +126,7 @@ namespace reshade::chams
 
 		WCHAR wide[MAX_PATH] = {};
 		build_dump_path(wide);
-		if (wide[0] == L'\\0')
+		if (wide[0] == L'\0')
 			return;
 
 		// one file per game start: truncate here, append afterwards
@@ -109,7 +139,7 @@ namespace reshade::chams
 		const int n = WideCharToMultiByte(CP_UTF8, 0, wide, -1, s_dump_path_utf8,
 		                                  sizeof(s_dump_path_utf8), nullptr, nullptr);
 		if (n <= 0)
-			s_dump_path_utf8[0] = '\\0';
+			s_dump_path_utf8[0] = '\0';
 
 		reshade::log::message(reshade::log::level::info,
 		                      "[CHAMS] dump file: %s", s_dump_path_utf8);
@@ -128,13 +158,13 @@ namespace reshade::chams
 
 		DWORD written = 0;
 		WriteFile(s_dump_file, text, static_cast<DWORD>(std::strlen(text)), &written, nullptr);
-		WriteFile(s_dump_file, "\\r\\n", 2, &written, nullptr);
+		WriteFile(s_dump_file, "\r\n", 2, &written, nullptr);
 		++s_dump_lines;
 	}
 
 	const char *dump_path()
 	{
-		return s_dump_path_utf8[0] != '\\0' ? s_dump_path_utf8 : "(not created yet)";
+		return s_dump_path_utf8[0] != '\0' ? s_dump_path_utf8 : "(not created yet)";
 	}
 
 	void begin_frame()
@@ -143,14 +173,22 @@ namespace reshade::chams
 		++g_frame_id;
 	}
 
+	void ensure_loaded()
+	{
+		static std::once_flag once;
+		std::call_once(once, [] { load(); });
+	}
+
 	void poll_hotkey()
 	{
+		ensure_loaded();
 		static bool was_down = false;
 		const bool down = (GetAsyncKeyState(k_toggle_key) & 0x8000) != 0;
 
 		if (down && !was_down)
 		{
 			g_settings.enabled = !g_settings.enabled;
+			save();
 			reshade::log::message(reshade::log::level::info,
 			                      "[CHAMS] toggled by hotkey -> %s", g_settings.enabled ? "on" : "off");
 		}
@@ -186,6 +224,7 @@ namespace reshade::chams
 
 	void load()
 	{
+		if (!config_file_safe()) return;
 		ini_file &config = chams_config();
 
 		config.get("CHAMS", "Enabled",            g_settings.enabled);
@@ -232,10 +271,17 @@ namespace reshade::chams
 		}
 
 		clamp_settings();
+		s_settings_loaded = true;
 	}
 
 	void save()
 	{
+		if (!s_settings_loaded)
+		{
+			reshade::log::message(reshade::log::level::warning, "[CHAMS] Settings were not loaded safely; refusing to overwrite. Fix access and restart.");
+				return;
+		}
+		if (!config_file_safe()) return;
 		clamp_settings();
 
 		ini_file &config = chams_config();
@@ -273,6 +319,8 @@ namespace reshade::chams
 		config.set("CHAMS", "ThroughWalls",       g_settings.through_walls);
 		config.set("CHAMS", "WideMatch",          g_settings.wide_match);
 
-		config.save();
+		if (!config.save())
+			reshade::log::message(reshade::log::level::warning,
+				"[CHAMS] Failed to save settings; check chams.ini permissions and concurrent modifications.");
 	}
 }

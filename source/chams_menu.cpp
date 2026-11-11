@@ -24,12 +24,7 @@
 
 void reshade::runtime::draw_gui_chams()
 {
-	static bool settings_loaded = false;
-	if (!settings_loaded)
-	{
-		chams::load();
-		settings_loaded = true;
-	}
+	chams::ensure_loaded();
 
 	chams::settings &s = chams::g_settings;
 
