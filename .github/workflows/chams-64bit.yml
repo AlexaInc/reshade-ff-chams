@@ -19,6 +19,10 @@ jobs:
         run: python3 tests/run_lifecycle_hook_tests.py
       - name: Test capture integration coverage
         run: python3 tests/check_capture_integration.py
+      - name: Test experimental host call-site probe with synthetic provider
+        run: |
+          python3 tests/run_host_caller_probe_tests.py
+          python3 tests/test_bridge_coverage.py
       - name: Test standalone asynchronous capture core
         run: python3 tests/run_chams_capture_tests.py
       - name: Test config validation
@@ -53,6 +57,15 @@ jobs:
           $testRoot = Join-Path $env:RUNNER_TEMP "chams-capture-tests"
           New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
           $cmd = 'call "' + $vs + '\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 >nul && cl /nologo /std:c++17 /EHsc /O2 tests\chams_capture_core_test.cpp source\chams_capture.cpp /Fe:chams-capture-test.exe && chams-capture-test.exe "' + $testRoot + '"'
+          cmd /c $cmd
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Smoke-test experimental host probe with Windows APIs
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual Studio C++ tools not found" }
+          $cmd = 'call "' + $vs + '\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 >nul && cl /nologo /std:c++17 /EHsc /O2 tests\chams_host_caller_windows_test.cpp /Fe:chams-host-probe-test.exe && chams-host-probe-test.exe'
           cmd /c $cmd
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build 64-bit Release

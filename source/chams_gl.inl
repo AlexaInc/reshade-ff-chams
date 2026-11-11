@@ -1313,6 +1313,9 @@ namespace reshade::chams
 			if (!capture::runtime_begin_draw()) return;
 			active = true; context = capture::native_context(); surface = capture::runtime_inflight_surface(capture::native_surface());
 			ticket = capture::runtime_bind_draw(context, surface);
+#if defined(_WIN32) && defined(CHAMS_HOST_CALLER_PROBE)
+			caller_probe::sample(context, surface, ticket);
+#endif
 			detect = g_settings.detect_mode; renderer = g_settings.render_mode; hide = g_settings.hide_own; budget = g_budget_left;
 			enabled = g_settings.enabled; through = g_settings.through_walls; glow = g_settings.glow; stroke = g_settings.stroke; wire = g_settings.wire;
 			own_cap = std::isfinite(g_settings.own_distance) ? g_settings.own_distance : -1;

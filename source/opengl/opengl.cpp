@@ -17,6 +17,9 @@
 thread_local reshade::opengl::device_context_impl *g_opengl_context = nullptr;
 
 #include "chams_capture.hpp"
+#if defined(_WIN32) && defined(CHAMS_HOST_CALLER_PROBE)
+#include "chams_host_caller_probe.hpp"
+#endif
 namespace reshade::chams::capture { uintptr_t native_context() { return reinterpret_cast<uintptr_t>(wglGetCurrentContext()); } uintptr_t native_surface() { return reinterpret_cast<uintptr_t>(wglGetCurrentDC()); } }
 #include "chams_gl.inl" // chams mod: extra draw passes (needs g_opengl_context and gl)
 
