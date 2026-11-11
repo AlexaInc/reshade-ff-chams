@@ -226,6 +226,15 @@ namespace reshade::chams
 	{
 		if (!config_file_safe()) return;
 		ini_file &config = chams_config();
+		// load_cache constructs the parser even if opening the file failed.
+		// Detect that case so a sharing violation cannot turn into an overwrite.
+		std::error_code ec;
+		const bool exists = std::filesystem::exists(std::filesystem::path(s_chams_config_path), ec);
+		if (ec || (exists && !config.load()))
+		{
+			reshade::log::message(reshade::log::level::warning, "[CHAMS] Failed to load settings; refusing to overwrite.");
+			return;
+		}
 
 		config.get("CHAMS", "Enabled",            g_settings.enabled);
 

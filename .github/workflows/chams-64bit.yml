@@ -18,6 +18,15 @@ jobs:
         with:
           python-version: '3.x'
       - uses: microsoft/setup-msbuild@v2
+      - name: Test Windows settings persistence
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual Studio C++ tools not found" }
+          $cmd = 'call "' + $vs + '\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 >nul && cl /nologo /std:c++17 /EHsc /DNOMINMAX /Ideps\utfcpp\source tests\chams_config_windows_test.cpp source\ini_file.cpp /Fe:chams-config-test.exe /link User32.lib Shell32.lib && chams-config-test.exe'
+          cmd /c $cmd
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build 64-bit Release
         run: msbuild ReShade.sln /t:ReShade /p:Configuration=Release /p:Platform=64-bit /m /v:m
       - uses: actions/upload-artifact@v4
