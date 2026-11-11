@@ -1045,6 +1045,24 @@ namespace reshade::chams
 	// Shared by all draw-wrapper template instantiations on this thread.
 	inline frame_trace &draw_trace() { static thread_local frame_trace trace; return trace; }
 
+	// Overlay bookkeeping is shared by every draw wrapper, like ov() itself.
+	// Keeping these statics inside draw_chams<F> would create one copy per
+	// entry-point lambda, repeatedly resetting the shared mask on mode changes.
+	inline int &previous_render_mode() { static int mode = -1; return mode; }
+	inline void observe_overlay_menu(bool is_open)
+	{
+		static bool was_open = false;
+		if (was_open && !is_open)
+		{
+			overlay_gpu &g = ov();
+			g.captured_frame = 0xFFFFFFFFu;
+			g.has_mask = false;
+			reshade::log::message(reshade::log::level::info,
+				"[CHAMS] menu closed - overlay state reset, chams resumed");
+		}
+		was_open = is_open;
+	}
+
 	// --------------------------------------------------------------- wrapper
 	template <typename F>
 	inline void draw_chams(GLenum mode, GLsizei count, F &&real_draw)
@@ -1059,6 +1077,11 @@ namespace reshade::chams
 		frame_trace *diag = trace.enter(s.dump_all, g_opengl_context, g_frame_id,
 			s.detect_mode, s.render_mode, s.hide_own,
 			[](const char *line) { dump_line(line); }) ? &trace : nullptr;
+
+		// Observe the open state before the early return; otherwise the menu
+		// close transition below can never be detected.
+		if (g_opengl_context != nullptr)
+			observe_overlay_menu(g_overlay_open);
 
 		if (!s.enabled || g_opengl_context == nullptr || g_overlay_open ||
 			g_budget_left <= 0 || !is_solid_primitive(mode) || count <= 0)
@@ -1083,14 +1106,14 @@ namespace reshade::chams
 		// Stale captured_frame / has_mask from a previous overlay session
 		// could cause the composite to skip (captured_frame mismatch) or
 		// composite a stale mask, both of which can lead to a black screen.
-		static int s_prev_render_mode = -1;
-		if (s_prev_render_mode != s.render_mode)
+		int &prev_render_mode = previous_render_mode();
+		if (prev_render_mode != s.render_mode)
 		{
 			overlay_gpu &g = ov();
 			g.captured_frame = 0xFFFFFFFFu;
 			g.has_mask = false;
 			// Reuse the existing GL objects when switching modes.
-			s_prev_render_mode = s.render_mode;
+			prev_render_mode = s.render_mode;
 			// Pre-build the overlay renderer when switching TO overlay mode, so
 			// shader compilation happens during rendering (not during wglSwapBuffers
 			// where it could stall the GPU pipeline and freeze the game). Called
@@ -1099,21 +1122,6 @@ namespace reshade::chams
 			if (s.render_mode == 0)
 				overlay_build();
 		}
-
-		// When the ReShade menu closes (g_overlay_open goes true -> false),
-		// reset overlay state so chams resume immediately on the next frame.
-		// Without this, g.captured_frame / g.has_mask stay stale from before
-		// the menu was open, and render_overlay() skips compositing.
-		static bool s_overlay_was_open = false;
-		if (s_overlay_was_open && !g_overlay_open)
-		{
-			overlay_gpu &g = ov();
-			g.captured_frame = 0xFFFFFFFFu;
-			g.has_mask = false;
-			reshade::log::message(reshade::log::level::info,
-				"[CHAMS] menu closed - overlay state reset, chams resumed");
-		}
-		s_overlay_was_open = g_overlay_open;
 
 		GLint program = 0;
 		if (gl.GetIntegerv) gl.GetIntegerv(GL_CURRENT_PROGRAM, &program);

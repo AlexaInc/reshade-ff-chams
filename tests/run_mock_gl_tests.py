@@ -99,6 +99,19 @@ int main() {
  assert(bounded.enter(true,reinterpret_cast<void *>(1),1901,0,1,true,emit));
  assert(bounded.enter(true,reinterpret_cast<void *>(2),1901,0,1,true,emit));
  assert(emitted==1801);
+ // Overlay mode state is shared across different draw-wrapper lambdas.
+ g_settings.dump_all=false;g_settings.enabled=true;g_settings.render_mode=1;
+ g_overlay_open=false;g_budget_left=3;g_frame_id=105;previous_render_mode()=-1;
+ draw_chams(GL_TRIANGLES,200,[&]{});
+ assert(previous_render_mode()==1);ov().has_mask=true;ov().captured_frame=105;
+ draw_chams(GL_TRIANGLES,200,[&]{});
+ assert(ov().has_mask && ov().captured_frame==105);
+ // An open/close transition is observed even when the budget is exhausted.
+ g_budget_left=0;g_overlay_open=true;
+ draw_chams(GL_TRIANGLES,200,[&]{});
+ assert(ov().has_mask);g_overlay_open=false;
+ draw_chams(GL_TRIANGLES,200,[&]{});
+ assert(!ov().has_mask && ov().captured_frame==0xFFFFFFFFu);
 }
 '''
 with tempfile.TemporaryDirectory() as d:
