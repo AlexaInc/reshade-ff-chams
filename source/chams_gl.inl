@@ -1224,8 +1224,11 @@ namespace reshade::chams
 		GLint first = -1, instances = -1, index_type = -1, base_vertex = 0, draw_count = -1, stride = -1;
 		uint64_t base_instance = 0, index_offset = 0, indirect_offset = 0, range_start = 0, range_end = 0;
 		int has_index_offset = 0, has_indirect_offset = 0, has_range = 0;
-		GLint viewport[4] = {}, depth_func = 0, blend_src = 0, blend_dst = 0;
-		int depth_test = 0, depth_write = 0, blend = 0, uniform_bits = 0, skin_bits = 0, wall_bits = 0, wall_hint = -1, matrix_bits = 0;
+		GLint viewport[4] = {}, scissor_box[4] = {}, depth_func = 0, blend_src = 0, blend_dst = 0;
+		GLint blend_src_alpha = 0, blend_dst_alpha = 0, blend_eq_rgb = 0, blend_eq_alpha = 0;
+		GLint active_texture = 0, texture_2d = 0, cull_mode = 0, read_framebuffer = 0;
+		GLfloat depth_range[2] = {}; GLboolean color_mask[4] = {};
+		int depth_test = 0, depth_write = 0, blend = 0, scissor = 0, cull = 0, uniform_bits = 0, skin_bits = 0, wall_bits = 0, wall_hint = -1, matrix_bits = 0;
 		int detect = 0, renderer = 0, hide = 0, budget = 0, stable = 0, has_info = 0;
 		int enabled = 0, through = 0, glow = 0, stroke = 0, wire = 0; float own_cap = 0;
 		float estimate = -1, distance = -1, world[16] = {}, view[16] = {}, vp[16] = {}, camera[3] = {};
@@ -1249,8 +1252,14 @@ namespace reshade::chams
 			gl.GetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao); gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &framebuffer);
 			gl.GetIntegerv(GL_VIEWPORT, viewport); gl.GetIntegerv(GL_DEPTH_FUNC, &depth_func);
 			gl.GetIntegerv(GL_BLEND_SRC_RGB, &blend_src); gl.GetIntegerv(GL_BLEND_DST_RGB, &blend_dst);
-			if (gl.IsEnabled) { depth_test = gl.IsEnabled(GL_DEPTH_TEST); blend = gl.IsEnabled(GL_BLEND); }
-			if (gl.GetBooleanv) { GLboolean b = GL_FALSE; gl.GetBooleanv(GL_DEPTH_WRITEMASK, &b); depth_write = b; }
+			gl.GetIntegerv(GL_BLEND_SRC_ALPHA, &blend_src_alpha); gl.GetIntegerv(GL_BLEND_DST_ALPHA, &blend_dst_alpha);
+			gl.GetIntegerv(GL_BLEND_EQUATION_RGB, &blend_eq_rgb); gl.GetIntegerv(GL_BLEND_EQUATION_ALPHA, &blend_eq_alpha);
+			gl.GetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_framebuffer); gl.GetIntegerv(GL_CULL_FACE_MODE, &cull_mode);
+			gl.GetIntegerv(GL_ACTIVE_TEXTURE, &active_texture); gl.GetIntegerv(GL_TEXTURE_BINDING_2D, &texture_2d);
+			gl.GetIntegerv(GL_SCISSOR_BOX, scissor_box);
+			if (gl.IsEnabled) { depth_test = gl.IsEnabled(GL_DEPTH_TEST); blend = gl.IsEnabled(GL_BLEND); scissor = gl.IsEnabled(GL_SCISSOR_TEST); cull = gl.IsEnabled(GL_CULL_FACE); }
+			if (gl.GetBooleanv) { GLboolean b = GL_FALSE; gl.GetBooleanv(GL_DEPTH_WRITEMASK, &b); depth_write = b; gl.GetBooleanv(GL_COLOR_WRITEMASK, color_mask); }
+			if (gl.GetFloatv) gl.GetFloatv(GL_DEPTH_RANGE, depth_range);
 			if (program && gl.GetUniformLocation) {
 				const auto &m = capture_program(context, program);
 				uniform_bits = m.tokens; skin_bits = m.skin; wall_bits = m.wall; program_epoch = m.epoch;
@@ -1286,6 +1295,13 @@ namespace reshade::chams
 					depth_test, depth_write, depth_func, blend, blend_src, blend_dst, uniform_bits, skin_bits, wall_bits, wall_hint, matrix_bits, detect, renderer, hide, enabled, through, glow, stroke, wire, budget, decision, has_info, dist_source, stable);
 				if (n < 0 || static_cast<size_t>(n) >= sizeof(b)) { capture::runtime_end_draw(ticket, nullptr); return; }
 				std::string body(b, static_cast<size_t>(n));
+				body += ",\"read_framebuffer\":" + std::to_string(read_framebuffer) + ",\"active_texture\":" + std::to_string(active_texture) + ",\"texture_2d\":" + std::to_string(texture_2d) +
+					",\"blend_src_alpha\":" + std::to_string(blend_src_alpha) + ",\"blend_dst_alpha\":" + std::to_string(blend_dst_alpha) +
+					",\"blend_eq_rgb\":" + std::to_string(blend_eq_rgb) + ",\"blend_eq_alpha\":" + std::to_string(blend_eq_alpha) +
+					",\"scissor\":" + std::to_string(scissor) + ",\"cull\":" + std::to_string(cull) + ",\"cull_mode\":" + std::to_string(cull_mode) +
+					",\"scissor_box\":[" + std::to_string(scissor_box[0]) + "," + std::to_string(scissor_box[1]) + "," + std::to_string(scissor_box[2]) + "," + std::to_string(scissor_box[3]) + "]" +
+					",\"color_mask\":[" + std::to_string(color_mask[0]) + "," + std::to_string(color_mask[1]) + "," + std::to_string(color_mask[2]) + "," + std::to_string(color_mask[3]) + "]" +
+					",\"depth_range\":[" + capture::json_number(depth_range[0]) + "," + capture::json_number(depth_range[1]) + "]";
 				body += ",\"own_cap\":" + capture::json_number(own_cap) + ",\"distance\":" + capture::json_number(distance) + ",\"own_est\":" + capture::json_number(estimate);
 				auto append = [&](const char *key, const float *v, int size) {
 					body += ",\""; body += key; body += "\":[";

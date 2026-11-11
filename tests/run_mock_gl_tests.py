@@ -202,6 +202,8 @@ with tempfile.TemporaryDirectory() as d:
   infos=[e for e in events if e['event']=='program_info']; assert infos
   first=draws[0]; assert first['api'] in ('mock_draw','benchmark') and first['decision']=='budget' and first['count']==200
   assert first['program_epoch']==infos[0]['epoch'] and first['program']==infos[0]['program']
+  assert first['color_mask']==[1,0,1,0] and len(first['depth_range'])==2
+  assert 'scissor_box' in first and 'blend_src_alpha' in first and 'texture_2d' in first
   if first['api']=='benchmark': assert len(draws)==4000
   else: observed.append([x['decision'] for x in draws]); offsets.append((first['has_index_offset'],first['index_offset']))
  assert sorted(observed,key=len)==[['budget'],['budget','classifier_reject','direct']]
