@@ -63,7 +63,7 @@ head += '#include "'+str(root/'source/chams_gl.inl')+'"\n'
 head += r'''
 std::vector<std::string> captured_lines;
 namespace reshade::chams::capture { uintptr_t native_context(){ return 1; } uintptr_t native_surface(){ return 2; } }
-namespace reshade::chams { settings g_settings; bool g_overlay_open=false; int g_budget_left=110; unsigned g_frame_id=1; void dump_line(const char *line){ captured_lines.emplace_back(line); } void ensure_loaded(){} }
+namespace reshade::chams { settings g_settings; bool g_overlay_open=false; int g_budget_left=110; std::atomic<unsigned> g_frame_id{1}; void dump_line(const char *line){ captured_lines.emplace_back(line); } void ensure_loaded(){} }
 namespace reshade::log { void message(level,const char*,...){} }
 int main(int argc, char **argv) {
  assert(argc==2);
@@ -96,6 +96,41 @@ int main(int argc, char **argv) {
  program_info p{};p.view_proj.plain=0;p.vp_m[15]=4;
  assert(object_distance(p)<0);
  p.obj_to_world.plain=0;p.world[12]=1;assert(object_distance(p)==4);
+ // Captured Gloo School pair seq 33655/33657: same object and VP, but
+ // only one program supplies _WorldSpaceCameraPos. Compare Euclidean distances.
+ program_info captured{};captured.obj_to_world.plain=0;captured.view_proj.plain=0;
+ const float vp_capture[16]={.950513542f,.156456828f,.198121071f,.198117122f,1.9591117e-7f,1.57596874f,-.414866656f,-.414858401f,-.21205093f,.701315761f,.888072968f,.888055265f,-42.7277451f,422.214752f,106.238464f,106.436348f};
+ std::memcpy(captured.vp_m,vp_capture,sizeof(vp_capture));
+ captured.world[12]=-.145164028f;captured.world[13]=-179.9702f;captured.world[14]=-200.476898f;
+ captured.loc_cam_pos=0;captured.cam_uniform[0]=-.285238892f;captured.cam_uniform[1]=-177.643066f;captured.cam_uniform[2]=-202.776306f;
+ const float uniform_distance=object_distance(captured);captured.loc_cam_pos=-1;
+ const float vp_distance=object_distance(captured);assert(std::fabs(uniform_distance-vp_distance)<.001f);
+ assert(std::strcmp(captured.dist_source,"MATRIX_VP_CAMERA")==0);
+ float camtest[3]={}; assert(!perspective_camera(p.vp_m,camtest)); // orthographic/singular
+ captured.vp_m[0]=NAN;assert(!perspective_camera(captured.vp_m,camtest));
+ // Stationary capture seq 55062/55064: same fixed object/VP, different
+ // programmes used Euclidean 3.486254 and axial depth 3.329197 respectively.
+ const float vp_stationary[16]={-.865868151f,-.509609222f,-.350648344f,-.35064137f,-1.45119383e-8f,1.326828f,-.64280045f,-.642787635f,.445773721f,-.989861667f,-.68109709f,-.68108356f,52.8365974f,39.3694f,49.1876106f,49.3866272f};
+ program_info stationary{};stationary.obj_to_world.plain=0;stationary.view_proj.plain=0;
+ std::memcpy(stationary.vp_m,vp_stationary,sizeof(vp_stationary));
+ stationary.world[12]=71.637001f;stationary.world[13]=11.4359999f;stationary.world[14]=19.9500008f;
+ stationary.loc_cam_pos=0;stationary.cam_uniform[0]=72.2411652f;stationary.cam_uniform[1]=14.3329706f;stationary.cam_uniform[2]=21.7929649f;
+ const float stationary_uniform=object_distance(stationary);stationary.loc_cam_pos=-1;
+ assert(std::fabs(object_distance(stationary)-stationary_uniform)<.001f);
+ assert(std::fabs(stationary_uniform-3.48625445f)<.001f);
+ assert(std::strcmp(stationary.dist_source,"MATRIX_VP_CAMERA")==0);
+ // Context changes on one thread cannot reuse another context's estimate or
+ // program cache, even if global present epoch did not change.
+ g_opengl_context=reinterpret_cast<void *>(1);g_frame_id=70;touch_frame();
+ own().own_est=3.15794563f;own().stable=30;pcache().count=1;icache().count=1;
+ g_opengl_context=reinterpret_cast<void *>(2);touch_frame();
+ assert(own().own_est<0 && own().stable==0 && pcache().count==0 && icache().count==0);
+ // Different render threads must not share the global-own estimate as in
+ // stationary seq 153699/153710. This checks isolation, not real GL timing.
+ own().own_est=2.99280167f;own().stable=30;pcache().count=1;
+ std::thread other([] { using namespace reshade::chams; assert(own().own_est<0 && own().stable==0);assert(pcache().count==0);own().own_est=7;own().stable=1;pcache().count=2; });
+ other.join();assert(own().own_est==2.99280167f && own().stable==30 && pcache().count==1);
+ g_opengl_context=nullptr;own()=own_track{};pcache().count=0;icache().count=0;
  // If a declared camera uniform has zero data, name the actual matrix fallback.
  p.view.plain=0;p.view_m[0]=p.view_m[5]=p.view_m[10]=1;p.view_m[12]=-2;
  p.loc_cam_pos=0;p.world[12]=5;assert(object_distance(p)==3);

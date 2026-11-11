@@ -24,7 +24,7 @@ namespace reshade::chams
 	settings g_settings;
 	bool     g_overlay_open = false;
 	int      g_budget_left  = k_max_draws_per_frame;
-	unsigned g_frame_id     = 0;
+	std::atomic<unsigned> g_frame_id{0};
 
 	// ======================= dump file ==================================
 	// ReShade.log sits next to HD-Player.exe, which is often read-only (the

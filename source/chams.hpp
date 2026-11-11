@@ -57,6 +57,8 @@
 
 #pragma once
 
+#include <atomic>
+
 namespace reshade::chams
 {
 	// ---- character detection (locked, not exposed in the menu) ----------
@@ -147,7 +149,7 @@ namespace reshade::chams
 	extern settings g_settings;
 	extern bool     g_overlay_open;
 	extern int      g_budget_left;
-	extern unsigned g_frame_id;
+	extern std::atomic<unsigned> g_frame_id;
 
 	void dump_line(const char *text);   // append one line to %TEMP%\chams-dump.txt
 	const char *dump_path();            // full path of the dump file (UTF-8)

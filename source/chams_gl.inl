@@ -96,7 +96,7 @@ namespace reshade::chams
 	// -------- character detection cache (uniform lookup is expensive) ----
 	struct program_cache_entry { GLint program; int detect_mode; bool is_character; };
 	struct program_cache { program_cache_entry e[32]; int count; };
-	inline program_cache &pcache() { static program_cache c = {}; return c; }
+	inline program_cache &pcache() { static thread_local program_cache c = {}; return c; }
 
 	// -------- per program: uniform locations + cached matrices ----------
 	// A matrix uniform in GLSL is either a real mat4 or - in hlslcc / ANGLE
@@ -129,30 +129,16 @@ namespace reshade::chams
 		const char *dist_source = "-";
 	};
 	struct program_info_cache { program_info e[32]; int count; };
-	inline program_info_cache &icache() { static program_info_cache c = {}; return c; }
+	inline program_info_cache &icache() { static thread_local program_info_cache c = {}; return c; }
 
 	// viewport of the current frame (needed to convert pixels <-> NDC)
 	struct viewport_cache { GLint x = 0, y = 0, w = 1920, h = 1080; };
-	inline viewport_cache &vpcache() { static viewport_cache c; return c; }
+	inline viewport_cache &vpcache() { static thread_local viewport_cache c; return c; }
 
-	// ---------------- my own character (third person) --------------------
-	// WHY THERE IS NO SHADER FLAG FOR THIS
-	// The real game files (asset pack 1.132.1) do not tag the local player: my
-	// own 3rd person model is drawn with exactly the same shaders as everybody
-	// else (BRMobile/Avatar/Skin, XJ_Skin, Cloth_*, hair/cloth via
-	// _BackLightDir). There is no "isLocalPlayer" uniform, no separate program,
-	// nothing in the uniform block that differs. So the only reliable runtime
-	// signal is geometry: the camera is glued to my own character, which means
-	//
-	//   * my model is the draw CLOSEST to the camera, and
-	//   * that distance stays almost constant frame after frame (the emulator
-	//     keeps a fixed third person offset: 2.4 - 2.6 m in every dump we have)
-	//   * while enemies move, so their distance keeps changing.
-	//
-	// The tracker below learns that distance by itself (it needs the same value
-	// for 3 frames before it believes it), and a draw is treated as "mine" when
-	// it is at that distance +-0.5 m AND below the OwnDistance safety cap.
-	// OwnDistance alone (v2.7/v2.8) was fooled whenever the camera pulled back.
+	// Own-character estimate is a distance-only heuristic, not an ownership
+	// signal. A nearby stationary enemy or accessory origin can be closer than
+	// the actual player; object identity is not established by these values.
+	// Consecutive plausible minima are required before exclusion is attempted.
 	struct own_track
 	{
 		float frame_min = 1e9f;   // closest character draw seen this frame
@@ -160,7 +146,7 @@ namespace reshade::chams
 		float own_est   = -1.0f;  // learned distance of my own model (-1 = unknown)
 		int   stable    = 0;      // consecutive frames the candidate held
 	};
-	inline own_track &own() { static own_track o; return o; }
+	inline own_track &own() { static thread_local own_track o; return o; }
 
 	inline void update_own_estimate()
 	{
@@ -240,8 +226,25 @@ namespace reshade::chams
 
 	inline void touch_frame()
 	{
-		static unsigned last_frame = 0xFFFFFFFFu;
-		if (last_frame != g_frame_id) { last_frame = g_frame_id; reset_frame_caches(); }
+		// GL contexts can render concurrently on different threads and their
+		// program names are not a shared identity. Keep the estimate and caches
+		// local to the calling thread, and discard them when that thread switches
+		// contexts. Migration to another thread deliberately starts fresh.
+		static thread_local const void *last_context = nullptr;
+		static thread_local unsigned last_frame = 0xFFFFFFFFu;
+		const unsigned frame = g_frame_id.load(std::memory_order_relaxed);
+		if (last_context != g_opengl_context)
+		{
+			last_context = g_opengl_context;
+			own() = own_track{};
+			pcache().count = 0;
+			icache().count = 0;
+			last_frame = frame;
+			GLint vp[4] = { 0, 0, 1920, 1080 };
+			if (gl.GetIntegerv) gl.GetIntegerv(GL_VIEWPORT, vp);
+			if (vp[2] > 0 && vp[3] > 0) vpcache() = { vp[0], vp[1], vp[2], vp[3] };
+		}
+		else if (last_frame != frame) { last_frame = frame; reset_frame_caches(); }
 	}
 
 	// ---------------------------------------------------- detection tokens
@@ -464,10 +467,36 @@ namespace reshade::chams
 		return p.view.valid() && camera_position(p.view_m, out);
 	}
 
+	// Recover the finite perspective centre from VP: the centre maps to
+	// clip x = y = w = 0. Orthographic, singular and ill-conditioned matrices
+	// do not define a usable finite centre. Use double intermediates because
+	// world translations can be large relative to camera-to-object distance.
+	inline bool perspective_camera(const GLfloat m[16], float out[3])
+	{
+		const double a[3] = { m[0], m[4], m[8] };
+		const double b[3] = { m[1], m[5], m[9] };
+		const double c[3] = { m[3], m[7], m[11] };
+		for (int i = 0; i < 16; ++i) if (!std::isfinite(m[i])) return false;
+		const double bc[3] = { b[1]*c[2]-b[2]*c[1], b[2]*c[0]-b[0]*c[2], b[0]*c[1]-b[1]*c[0] };
+		const double ca[3] = { c[1]*a[2]-c[2]*a[1], c[2]*a[0]-c[0]*a[2], c[0]*a[1]-c[1]*a[0] };
+		const double ab[3] = { a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0] };
+		const double det = a[0]*bc[0] + a[1]*bc[1] + a[2]*bc[2];
+		const double norm = std::sqrt((a[0]*a[0]+a[1]*a[1]+a[2]*a[2]) *
+			(b[0]*b[0]+b[1]*b[1]+b[2]*b[2]) * (c[0]*c[0]+c[1]*c[1]+c[2]*c[2]));
+		if (!std::isfinite(norm) || norm < 1e-12 || std::fabs(det) < 1e-6 * norm) return false;
+		for (int i = 0; i < 3; ++i) {
+			const double value = (-m[12]*bc[i] - m[13]*ca[i] - m[15]*ab[i]) / det;
+			if (!std::isfinite(value) || std::fabs(value) > 1e7) return false;
+			out[i] = static_cast<float>(value);
+		}
+		return true;
+	}
+
 	// distance from the camera in metres, or < 0 when it cannot be read.
 	//   1. _WorldSpaceCameraPos + object position  (euclidean)
 	//   2. view matrix + object position           (euclidean)
-	//   3. view-projection * object position       (clip w = view space depth)
+	//   3. perspective view-projection centre      (euclidean)
+	//   4. clip w fallback (axial depth only, never used for own tracking)
 	inline float object_distance(program_info &p)
 	{
 		const float ox = p.world[12], oy = p.world[13], oz = p.world[14];
@@ -486,8 +515,16 @@ namespace reshade::chams
 		{
 			// clip.w = row3 . (pos, 1) = distance along the view axis
 			const float w = p.vp_m[3] * ox + p.vp_m[7] * oy + p.vp_m[11] * oz + p.vp_m[15];
-			if (w > 0.01f && w < 5000.0f)
+			if (std::isfinite(w) && w > 0.01f && w < 5000.0f)
 			{
+				if (perspective_camera(p.vp_m, cam))
+				{
+					const float dx = ox - cam[0], dy = oy - cam[1], dz = oz - cam[2];
+					const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+					if (std::isfinite(distance)) { p.dist_source = "MATRIX_VP_CAMERA"; return distance; }
+				}
+				// Keep the old depth-based rendering fallback, but do not compare it
+				// against Euclidean own-character distances from other programs.
 				p.dist_source = "MATRIX_VP";
 				return w;
 			}
@@ -912,11 +949,11 @@ namespace reshade::chams
 			"ownest=%.2f stable=%d hideown=%d hidden=%d detect=%d render=%d budget=%d match=%s "
 			"owncap=%.2f wall_hint=%d wall_bits=%d viewport=(%d,%d,%d,%d) origin_valid=%d origin_gl=(%.1f,%.1f) "
 			"array_buffer=%d element_buffer=%d depth_test=%d depth_func=0x%04X depth_write=%d uniforms=[%s]",
-			g_frame_id, static_cast<void *>(g_opengl_context), program, count, dist,
+			g_frame_id.load(std::memory_order_relaxed), static_cast<void *>(g_opengl_context), program, count, dist,
 			(dist >= 0.0f && dist < g_settings.own_distance) ? 1 : 0, p.dist_source,
 			p.world[12], p.world[13], p.world[14], cam[0], cam[1], cam[2],
 			has_uniform ? 1 : 0, own().own_est, own().stable, g_settings.hide_own ? 1 : 0,
-			(g_settings.hide_own && dist >= 0.0f && own().own_est > 0.0f && own().stable >= 30 &&
+			(g_settings.hide_own && std::strcmp(p.dist_source, "MATRIX_VP") != 0 && dist >= 0.0f && own().own_est > 0.0f && own().stable >= 30 &&
 			 dist < g_settings.own_distance && std::fabs(dist - own().own_est) <= 0.2f) ? 1 : 0,
 			g_settings.detect_mode, g_settings.render_mode, g_budget_left, character_token(program),
 			g_settings.own_distance, wall_hint ? 1 : 0, wall_bits, vp[0], vp[1], vp[2], vp[3],
@@ -979,7 +1016,7 @@ namespace reshade::chams
 		char line[1024];
 		std::snprintf(line, sizeof(line),
 			"[CHAMS-DUMPALL] f=%u mode=0x%04X count=%d prog=%d chara_uniform=%d dw=%d uniforms=[%s]",
-			g_frame_id, static_cast<unsigned>(mode), count, program,
+			g_frame_id.load(std::memory_order_relaxed), static_cast<unsigned>(mode), count, program,
 			has_uniform ? 1 : 0, depth_writes ? 1 : 0, uniforms);
 		dump_line(line);
 	}
@@ -1447,18 +1484,13 @@ namespace reshade::chams
 		          gl.GetUniformLocation(static_cast<GLuint>(program), k_character_uniform) != -1,
 		          wall_hint, cam);
 
-		// ---- my own character (third person) -------------------------------
-		// The game does not mark the local player in any shader (checked in the
-		// real asset pack: same programs, same uniforms), so it is identified by
-		// geometry: the camera is glued to my model, therefore it is the CLOSEST
-		// character draw AND its distance hardly ever changes (2.4-2.6 m in every
-		// dump). own().own_est learns that distance by itself (see above).
-		// OwnDistance stays as a safety cap so a very close enemy can never be
-		// mistaken for my model and left unpainted.
-		if (dist > 0.0f && dist < own().frame_min)
+		// Distance-only ownership remains a heuristic. All measurements used
+		// here must have the same Euclidean meaning; clip-w is axial depth.
+		const bool comparable_distance = std::strcmp(info->dist_source, "MATRIX_VP") != 0;
+		if (comparable_distance && dist > 0.0f && dist < own().frame_min)
 			own().frame_min = dist;
 
-		if (s.hide_own && dist >= 0.0f)
+		if (s.hide_own && comparable_distance && dist >= 0.0f)
 		{
 			const own_track &o = own();
 			// Only hide when we are confident about the own-character distance
