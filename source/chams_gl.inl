@@ -389,6 +389,9 @@ namespace reshade::chams
 			return nullptr;
 
 		program_info &p = c.e[c.count++];
+		// Slots are reused after each frame; do not carry matrices or camera
+		// values from a different program into this program's fallback paths.
+		p = program_info{};
 		p.program = program;
 
 		static const char *const otw_names[] = {
@@ -432,15 +435,17 @@ namespace reshade::chams
 	}
 
 	// camera position for the dump / for the fallback distance test
-	inline bool camera_of(const program_info &p, float out[3])
+	inline bool camera_of(const program_info &p, float out[3], bool *from_uniform = nullptr)
 	{
+		if (from_uniform != nullptr) *from_uniform = false;
 		if (p.loc_cam_pos != -1 &&
 		    !(p.cam_uniform[0] == 0.0f && p.cam_uniform[1] == 0.0f && p.cam_uniform[2] == 0.0f))
 		{
 			out[0] = p.cam_uniform[0]; out[1] = p.cam_uniform[1]; out[2] = p.cam_uniform[2];
+			if (from_uniform != nullptr) *from_uniform = true;
 			return true;
 		}
-		return camera_position(p.view_m, out);
+		return p.view.valid() && camera_position(p.view_m, out);
 	}
 
 	// distance from the camera in metres, or < 0 when it cannot be read.
@@ -453,14 +458,15 @@ namespace reshade::chams
 		const bool have_obj = p.obj_to_world.valid() && !(ox == 0.0f && oy == 0.0f && oz == 0.0f);
 
 		float cam[3];
-		if (have_obj && camera_of(p, cam))
+		bool from_uniform = false;
+		if (have_obj && camera_of(p, cam, &from_uniform))
 		{
 			const float dx = ox - cam[0], dy = oy - cam[1], dz = oz - cam[2];
-			p.dist_source = (p.loc_cam_pos != -1) ? "_WorldSpaceCameraPos" : "MATRIX_V";
+			p.dist_source = from_uniform ? "_WorldSpaceCameraPos" : "MATRIX_V";
 			return std::sqrt(dx * dx + dy * dy + dz * dz);
 		}
 
-		if (p.view_proj.valid())
+		if (have_obj && p.view_proj.valid())
 		{
 			// clip.w = row3 . (pos, 1) = distance along the view axis
 			const float w = p.vp_m[3] * ox + p.vp_m[7] * oy + p.vp_m[11] * oz + p.vp_m[15];
@@ -473,6 +479,24 @@ namespace reshade::chams
 
 		p.dist_source = "-";
 		return -1.0f;
+	}
+
+	// Diagnostic only: project the object origin, not a mesh bounding box or
+	// proof that a specific pixel belongs to this draw. Coordinates are in the
+	// current OpenGL viewport with a bottom-left origin.
+	inline bool diagnostic_project_origin(const program_info &p, const GLint vp[4], float out[2])
+	{
+		if (!p.obj_to_world.valid() || !p.view_proj.valid() || vp[2] <= 0 || vp[3] <= 0)
+			return false;
+		const float x = p.world[12], y = p.world[13], z = p.world[14];
+		const float cx = p.vp_m[0]*x + p.vp_m[4]*y + p.vp_m[8]*z + p.vp_m[12];
+		const float cy = p.vp_m[1]*x + p.vp_m[5]*y + p.vp_m[9]*z + p.vp_m[13];
+		const float cw = p.vp_m[3]*x + p.vp_m[7]*y + p.vp_m[11]*z + p.vp_m[15];
+		if (!std::isfinite(cx) || !std::isfinite(cy) || !std::isfinite(cw) || cw <= 0.0f)
+			return false;
+		out[0] = vp[0] + (cx / cw * 0.5f + 0.5f) * vp[2];
+		out[1] = vp[1] + (cy / cw * 0.5f + 0.5f) * vp[3];
+		return std::isfinite(out[0]) && std::isfinite(out[1]);
 	}
 
 	// ------------------------------------------------------------- GL state
@@ -805,7 +829,7 @@ namespace reshade::chams
 	inline bool &dump_was_on()    { static bool v = false; return v; }
 
 	inline void dump_draw(GLint program, GLsizei count, const program_info &p,
-	                      float dist, bool has_uniform, float cam[3])
+	                      float dist, bool has_uniform, bool wall_hint, float cam[3])
 	{
 		if (!g_settings.dump)
 		{
@@ -849,18 +873,39 @@ namespace reshade::chams
 			}
 		}
 
-		char line[1280];
+		GLint vp[4] = {}, array_buffer = 0, element_buffer = 0, depth_func = 0;
+		GLboolean depth_write = GL_FALSE;
+		gl.GetIntegerv(GL_VIEWPORT, vp);
+		gl.GetIntegerv(GL_ARRAY_BUFFER_BINDING, &array_buffer);
+		gl.GetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &element_buffer);
+		gl.GetIntegerv(GL_DEPTH_FUNC, &depth_func);
+		gl.GetBooleanv(GL_DEPTH_WRITEMASK, &depth_write);
+		float screen[2] = {};
+		const bool screen_valid = diagnostic_project_origin(p, vp, screen);
+		int wall_bits = 0;
+		if (gl.GetUniformLocation != nullptr)
+		{
+			if (gl.GetUniformLocation(static_cast<GLuint>(program), "_FakeDepth_Ground") != -1) wall_bits |= 1;
+			if (gl.GetUniformLocation(static_cast<GLuint>(program), "_IceColorBackground") != -1) wall_bits |= 2;
+			if (gl.GetUniformLocation(static_cast<GLuint>(program), "_DepthTexMask") != -1) wall_bits |= 4;
+		}
+		char line[1800];
 		std::snprintf(line, sizeof(line),
-			"[CHAMS-DUMP] f=%u prog=%d count=%d dist=%.2f own=%d src=%s "
+			"[CHAMS-DUMP] f=%u ctx=%p prog=%d count=%d dist=%.2f own=%d src=%s "
 			"world=(%.2f,%.2f,%.2f) cam=(%.2f,%.2f,%.2f) chara_uniform=%d "
-			"ownest=%.2f stable=%d hideown=%d hidden=%d detect=%d render=%d budget=%d match=%s uniforms=[%s]",
-			g_frame_id, program, count, dist,
+			"ownest=%.2f stable=%d hideown=%d hidden=%d detect=%d render=%d budget=%d match=%s "
+			"owncap=%.2f wall_hint=%d wall_bits=%d viewport=(%d,%d,%d,%d) origin_valid=%d origin_gl=(%.1f,%.1f) "
+			"array_buffer=%d element_buffer=%d depth_test=%d depth_func=0x%04X depth_write=%d uniforms=[%s]",
+			g_frame_id, static_cast<void *>(g_opengl_context), program, count, dist,
 			(dist >= 0.0f && dist < g_settings.own_distance) ? 1 : 0, p.dist_source,
 			p.world[12], p.world[13], p.world[14], cam[0], cam[1], cam[2],
 			has_uniform ? 1 : 0, own().own_est, own().stable, g_settings.hide_own ? 1 : 0,
 			(g_settings.hide_own && dist >= 0.0f && own().own_est > 0.0f && own().stable >= 30 &&
 			 dist < g_settings.own_distance && std::fabs(dist - own().own_est) <= 0.2f) ? 1 : 0,
-			g_settings.detect_mode, g_settings.render_mode, g_budget_left, character_token(program), uniforms);
+			g_settings.detect_mode, g_settings.render_mode, g_budget_left, character_token(program),
+			g_settings.own_distance, wall_hint ? 1 : 0, wall_bits, vp[0], vp[1], vp[2], vp[3],
+			screen_valid ? 1 : 0, screen[0], screen[1], array_buffer, element_buffer,
+			gl.IsEnabled(GL_DEPTH_TEST) ? 1 : 0, static_cast<unsigned>(depth_func), depth_write ? 1 : 0, uniforms);
 
 		dump_line(line);
 	}
@@ -1071,6 +1116,18 @@ namespace reshade::chams
 			ensure_loaded();
 		settings &s = g_settings;
 
+		// Re-arm bounded dumps when switched off, including while the menu is
+		// open or the draw budget is exhausted. The old stop branches were
+		// unreachable for Dump ALL because it was only called while enabled.
+		if (g_opengl_context != nullptr && !s.dump_all && dumpall_was_on())
+			dump_all_draw(0, 0, 0, false, false);
+		if (g_opengl_context != nullptr && !s.dump && dump_was_on())
+		{
+			dump_was_on() = false;
+			dump_lines_left() = 2000;
+			dump_line("[CHAMS-DUMP] ---- stop ----");
+		}
+
 		// Count wrapper decisions only while Dump ALL is enabled. Counters are
 		// per-thread and per-context segment; they do not imply object identity.
 		frame_trace &trace = draw_trace();
@@ -1126,9 +1183,9 @@ namespace reshade::chams
 		GLint program = 0;
 		if (gl.GetIntegerv) gl.GetIntegerv(GL_CURRENT_PROGRAM, &program);
 
-		// the ice wall is not a character, so it has to be checked here
-		if (gl.GetIntegerv != nullptr)
-			program_is_wall(program);
+		// Preserve the existing wall heuristic; its result is diagnostic only
+		// and is not a validated object-identity or character-exclusion rule.
+		const bool wall_hint = gl.GetIntegerv != nullptr && program_is_wall(program);
 
 		// "dump all" runs before every filter, so skipped pieces show up too
 		if (s.dump_all)
@@ -1175,7 +1232,7 @@ namespace reshade::chams
 		dump_draw(program, count, *info, dist,
 		          gl.GetUniformLocation != nullptr &&
 		          gl.GetUniformLocation(static_cast<GLuint>(program), k_character_uniform) != -1,
-		          cam);
+		          wall_hint, cam);
 
 		// ---- my own character (third person) -------------------------------
 		// The game does not mark the local player in any shader (checked in the

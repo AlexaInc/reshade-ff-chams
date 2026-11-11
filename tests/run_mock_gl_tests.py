@@ -79,6 +79,26 @@ int main() {
  pcache().count=0;g_settings.detect_mode=0;assert(!program_is_character(123));
  g_settings.detect_mode=1;assert(program_is_character(123));
  g_settings.detect_mode=0;assert(!program_is_character(123));
+ // Reused cache slots must not retain another program's matrices/camera.
+ icache().count=0;program_info *old=get_program_info(123);assert(old);
+ old->world[12]=7;old->view_m[13]=9;old->cam_uniform[0]=11;
+ icache().count=0;program_info *fresh=get_program_info(124);assert(fresh);
+ assert(fresh->world[12]==0 && fresh->view_m[13]==0 && fresh->cam_uniform[0]==0);
+ // Clip depth must not be derived from an unavailable object transform.
+ program_info p{};p.view_proj.plain=0;p.vp_m[15]=4;
+ assert(object_distance(p)<0);
+ p.obj_to_world.plain=0;p.world[12]=1;assert(object_distance(p)==4);
+ // If a declared camera uniform has zero data, name the actual matrix fallback.
+ p.view.plain=0;p.view_m[0]=p.view_m[5]=p.view_m[10]=1;p.view_m[12]=-2;
+ p.loc_cam_pos=0;p.world[12]=5;assert(object_distance(p)==3);
+ assert(std::strcmp(p.dist_source,"MATRIX_V")==0);
+ // Projected origin is viewport-relative and fails when matrix/clip w is missing.
+ program_info projection{};projection.obj_to_world.plain=0;projection.view_proj.plain=0;
+ projection.world[12]=.5f;projection.vp_m[0]=projection.vp_m[5]=projection.vp_m[15]=1;
+ int viewport[4]={10,20,800,600};float screen[2]={};
+ assert(diagnostic_project_origin(projection,viewport,screen));
+ assert(screen[0]==610 && screen[1]==320);projection.vp_m[15]=0;
+ assert(!diagnostic_project_origin(projection,viewport,screen));
  // Actual wrapper: budget-exhausted calls remain exactly one original draw,
  // with a per-frame summary only when Dump ALL is enabled.
  captured_lines.clear();g_settings=settings{};g_settings.dump_all=true;
@@ -91,6 +111,21 @@ int main() {
  assert(captured_lines[0].find("calls=1")!=std::string::npos && captured_lines[0].find("budget=1")!=std::string::npos);
  g_settings.dump_all=false;g_frame_id=102;draw_chams(GL_TRIANGLES,200,[&]{++originals;});
  assert(originals==3 && captured_lines.size()==1);
+ // Disabling each dump re-arms it even with an exhausted draw budget.
+ dumpall_was_on()=true;dumpall_lines_left()=0;dump_was_on()=true;dump_lines_left()=0;
+ g_settings.dump_all=false;g_settings.dump=false;
+ draw_chams(GL_TRIANGLES,200,[&]{++originals;});
+ assert(!dumpall_was_on() && dumpall_lines_left()==3000);
+ assert(!dump_was_on() && dump_lines_left()==2000);
+ // New diagnostic context and hints appear only for an explicitly enabled dump.
+ captured_lines.clear();g_settings.dump=true;float camera[3]={1,2,3};
+ dump_draw(123,100,projection,3.0f,true,false,camera);
+ assert(captured_lines.size()==2);
+ assert(captured_lines.back().find("ctx=")!=std::string::npos);
+ assert(captured_lines.back().find("wall_bits=0")!=std::string::npos);
+ assert(captured_lines.back().find("origin_valid=0")!=std::string::npos);
+ assert(captured_lines.back().find("element_buffer=")!=std::string::npos);
+ g_settings.dump=false;dump_was_on()=false;
  // Summaries are bounded and segmented when the context changes.
  frame_trace bounded;int emitted=0;auto emit=[&](const char*){++emitted;};
  for(unsigned i=0;i<1900;i++) assert(bounded.enter(true,reinterpret_cast<void *>(1),i,1,1,false,emit));
