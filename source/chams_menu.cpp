@@ -16,12 +16,42 @@
 #include "runtime.hpp"
 #include <Windows.h>
 #include <cstdlib>
+#include <cstdio>
+#include <cmath>
+#include <sstream>
+#include <locale>
 #include "chams.hpp"
 #include "chams_capture.hpp"
 #include <imgui.h>
 #include <fstream>
 #include <vector>
 #include <string>
+
+static void capture_settings_snapshot(const reshade::chams::settings &s, const char *phase)
+{
+	try {
+		auto valid = [](float x) { return std::isfinite(x) ? x : -1.0f; };
+		std::ostringstream row; row.imbue(std::locale::classic()); row.precision(9);
+		row << "\"phase\":\"" << phase << "\",\"enabled\":" << s.enabled << ",\"detect\":" << s.detect_mode
+		    << ",\"renderer\":" << s.render_mode << ",\"hide_own\":" << s.hide_own << ",\"own_cap\":" << valid(s.own_distance)
+		    << ",\"through_walls\":" << s.through_walls << ",\"glow\":" << s.glow << ",\"glow_mode\":" << s.glow_mode
+		    << ",\"glow_open\":" << s.glow_open << ",\"glow_alpha\":" << valid(s.glow_alpha);
+		auto color = [&](const char *key, const float (&v)[3]) { row << ",\"" << key << "\":[" << valid(v[0]) << ',' << valid(v[1]) << ',' << valid(v[2]) << ']'; };
+		color("glow_open_color", s.glow_open_color); color("glow_through_color", s.glow_through_color);
+		row << ",\"stroke\":" << s.stroke << ",\"stroke_open\":" << s.stroke_open << ",\"stroke_alpha\":" << valid(s.stroke_alpha)
+		    << ",\"stroke_open_size\":" << s.stroke_open_size << ",\"stroke_through_size\":" << s.stroke_through_size;
+		color("stroke_open_color", s.stroke_open_color); color("stroke_through_color", s.stroke_through_color);
+		row << ",\"wire\":" << s.wire << ",\"wire_open\":" << s.wire_open << ",\"wire_alpha\":" << valid(s.wire_alpha) << ",\"wire_size\":" << s.wire_size;
+		color("wire_open_color", s.wire_open_color); color("wire_through_color", s.wire_through_color);
+		reshade::chams::capture::runtime_event(0, "settings", row.str());
+	} catch (...) { reshade::chams::capture::runtime_record_loss(); }
+}
+
+static void save_settings_with_capture(const reshade::chams::settings &s)
+{
+	reshade::chams::save();
+	if (reshade::chams::capture::runtime_enabled()) capture_settings_snapshot(s, "change");
+}
 
 void reshade::runtime::draw_gui_chams()
 {
@@ -42,16 +72,24 @@ void reshade::runtime::draw_gui_chams()
 			{
 				std::error_code ec;
 				const auto temp = std::filesystem::temp_directory_path(ec);
-				start_failed = ec || !runtime_start(temp / "ReShade-Chams-Captures");
+				try { start_failed = ec || !runtime_start(temp / "ReShade-Chams-Captures"); }
+				catch (...) { start_failed = true; }
+				if (!start_failed) capture_settings_snapshot(s, "start");
 			}
 		}
-		else if (ImGui::Button("Stop tracking##capture")) runtime_stop();
+		else if (ImGui::Button("Stop tracking##capture")) { capture_settings_snapshot(s, "stop"); runtime_stop(); }
+		if (runtime_enabled()) { ImGui::SameLine();
+			if (ImGui::Button("Add marker##capture")) runtime_marker(native_context(), native_surface(), "menu"); }
 		const auto capture_status = runtime_status();
 		ImGui::SameLine(); ImGui::TextUnformatted(capture_status.active ? "TRACKING ACTIVE" : "Tracking stopped");
 		ImGui::Text("Frames: %llu  Contexts: %llu  Draw records: %llu",
 			static_cast<unsigned long long>(capture_status.frames), static_cast<unsigned long long>(capture_status.contexts),
 			static_cast<unsigned long long>(capture_status.draws));
-		ImGui::Text("Dropped: %llu  Writer error: %s", static_cast<unsigned long long>(capture_status.dropped), capture_status.io_error ? "YES" : "no");
+		ImGui::Text("Dropped: %llu  Incomplete frames: %llu  Writer error: %s", static_cast<unsigned long long>(capture_status.dropped), static_cast<unsigned long long>(capture_status.partial_frames), capture_status.io_error ? "YES" : "no");
+		const double seconds = static_cast<double>(capture_status.elapsed_ns) * 1e-9;
+		const double mib = static_cast<double>(capture_status.bytes) / (1024.0 * 1024.0);
+		ImGui::Text("Elapsed: %.1f s  Written: %.1f MiB  Rate: %.2f MiB/s", seconds, mib, seconds > 0 ? mib / seconds : 0.0);
+		ImGui::TextWrapped("F9 marks an event in the trace without consuming the key. Capture may use many gigabytes.");
 		const auto capture_path = runtime_directory().u8string();
 		if (!capture_path.empty()) { ImGui::TextWrapped("Session: %s", capture_path.c_str());
 			if (ImGui::Button("Copy capture folder##capture")) ImGui::SetClipboardText(capture_path.c_str()); }
@@ -62,7 +100,7 @@ void reshade::runtime::draw_gui_chams()
 
 	// ============================== master switch ==============================
 	if (ImGui::Checkbox("Master switch##chams", &s.enabled))
-		chams::save();
+		save_settings_with_capture(s);
 	ImGui::SameLine();
 	ImGui::TextDisabled("%s  (F8 toggles in game)", s.enabled ? "on" : "off");
 
@@ -72,7 +110,7 @@ void reshade::runtime::draw_gui_chams()
 	if (ImGui::Combo("##renderer", &s.render_mode,
 		"Overlay - mask framebuffer, painted on top of the finished frame (glue wall safe)\0"
 		"Direct - per-draw passes, depth tested by the game (safe default)\0"))
-		chams::save();
+		save_settings_with_capture(s);
 	ImGui::TextDisabled("overlay: captured into a separate buffer and painted on top of the frame,");
 	ImGui::TextDisabled("         so nothing in the scene can hide them. Glue walls, wall skins,");
 	ImGui::TextDisabled("         containers - none of them can block the overlay. If the screen goes");
@@ -86,7 +124,7 @@ void reshade::runtime::draw_gui_chams()
 		"Wide - any avatar-only uniform (all skins / cloth / hair) [default]\0"
 		"Skinned - any bone matrix uniform (unknown skins)\0"
 		"All - union of the three\0"))
-		chams::save();
+		save_settings_with_capture(s);
 	ImGui::TextDisabled("wide checks 8 avatar-only uniforms taken from the real game files,");
 	ImGui::TextDisabled("so new skins / cloth shaders are picked up without an update");
 	ImGui::TextDisabled("if something is still missed, try 'Skinned' or 'All'");
@@ -94,7 +132,7 @@ void reshade::runtime::draw_gui_chams()
 
 	// ---- through walls: ONE switch, no percentage any more ------------------
 	if (ImGui::Checkbox("See enemies through walls and the glue / ice wall##through", &s.through_walls))
-		chams::save();
+		save_settings_with_capture(s);
 	ImGui::TextDisabled("on (default) = the wall is drawn after the players, so the chams are pushed");
 	ImGui::TextDisabled("               nearer in depth and the wall cannot paint over them");
 	ImGui::TextDisabled("off          = only the part behind a car / wall / body is claimed");
@@ -107,25 +145,25 @@ void reshade::runtime::draw_gui_chams()
 	if (ImGui::CollapsingHeader("Third person (my own character)", ImGuiTreeNodeFlags_DefaultOpen))
 	{
 		if (ImGui::Checkbox("No chams on my own character (auto)##hideown", &s.hide_own))
-			chams::save();
+			save_settings_with_capture(s);
 		if (s.hide_own)
 		{
 			ImGui::TextDisabled("detected automatically: my model is the CLOSEST draw and its distance");
 			ImGui::TextDisabled("stays the same every frame (2.4-2.6 m), enemies keep changing");
 			ImGui::TextDisabled("the game does not tag the local player in any shader, so this is geometry only");
 			if (ImGui::SliderFloat("Safety cap: my character is nearer than", &s.own_distance, 0.5f, 15.0f, "%.1f m"))
-				chams::save();
+				save_settings_with_capture(s);
 			ImGui::TextDisabled("a draw further than this is never treated as mine (protects close enemies)");
 		}
 
 		ImGui::Spacing();
 		if (ImGui::Checkbox("Also paint hair / cloth shaders (wide match)##wide", &s.wide_match))
-			chams::save();
+			save_settings_with_capture(s);
 		ImGui::TextDisabled("those shaders do not declare _CharaLightIntensity; they are matched by _BackLightDir");
 
 		ImGui::Spacing();
 		if (ImGui::Checkbox("Dump mode (write draw info to ReShade.log)##dump", &s.dump))
-			chams::save();
+			save_settings_with_capture(s);
 		if (s.dump)
 		{
 			ImGui::TextWrapped("%s",
@@ -140,7 +178,7 @@ void reshade::runtime::draw_gui_chams()
 
 			ImGui::Spacing();
 			if (ImGui::Checkbox("Dump ALL draws (find missing pieces)##dumpall", &s.dump_all))
-				chams::save();
+				save_settings_with_capture(s);
 			if (s.dump_all)
 			{
 				ImGui::TextWrapped("%s",
@@ -157,7 +195,7 @@ void reshade::runtime::draw_gui_chams()
 	if (ImGui::CollapsingHeader("Glow (highlight full character)", ImGuiTreeNodeFlags_DefaultOpen))
 	{
 		if (ImGui::Checkbox("Player highlight##glow", &s.glow))
-			chams::save();
+			save_settings_with_capture(s);
 		ImGui::SameLine();
 		ImGui::TextDisabled("%s", s.glow ? "on" : "off");
 
@@ -170,7 +208,7 @@ void reshade::runtime::draw_gui_chams()
 		mode_changed |= ImGui::RadioButton("Real clothes + light colour##gm2", &s.glow_mode, 2);
 		mode_changed |= ImGui::RadioButton("Real clothes only (no colour)##gm3", &s.glow_mode, 3);
 		if (mode_changed)
-			chams::save();
+			save_settings_with_capture(s);
 		ImGui::TextDisabled("solid = classic chams | blend = texture still readable");
 		ImGui::TextDisabled("real clothes = the actual outfit / skin / hair / gun is drawn, also through walls");
 		ImGui::TextDisabled("if the colours still hide the clothes, pick one of the two 'real clothes' modes");
@@ -185,20 +223,20 @@ void reshade::runtime::draw_gui_chams()
 		}
 
 		if (ImGui::SliderFloat("Glow strength", &s.glow_alpha, 0.05f, 1.0f, "%.2f"))
-			chams::save();
+			save_settings_with_capture(s);
 
 		ImGui::Spacing();
 		if (ImGui::ColorEdit3("Through walls - colour", s.glow_through_color, ImGuiColorEditFlags_NoInputs))
-			chams::save();
+			save_settings_with_capture(s);
 		ImGui::TextDisabled("part hidden behind a wall, a car or the throwable glue wall");
 
 		ImGui::Spacing();
 		if (ImGui::Checkbox("Open part (not covered)##glowopen", &s.glow_open))
-			chams::save();
+			save_settings_with_capture(s);
 		if (s.glow_open)
 		{
 			if (ImGui::ColorEdit3("Open part - colour", s.glow_open_color, ImGuiColorEditFlags_NoInputs))
-				chams::save();
+				save_settings_with_capture(s);
 		}
 		else
 		{
@@ -212,35 +250,35 @@ void reshade::runtime::draw_gui_chams()
 	if (ImGui::CollapsingHeader("Stroke (2D outline - the drawn line)", ImGuiTreeNodeFlags_DefaultOpen))
 	{
 		if (ImGui::Checkbox("Stroke##stroke", &s.stroke))
-			chams::save();
+			save_settings_with_capture(s);
 		ImGui::SameLine();
 		ImGui::TextDisabled("%s", s.stroke ? "on" : "off");
 
 		if (ImGui::SliderInt("Stroke size - open area (px)##strokesizeopen", &s.stroke_open_size, 1, 16))
-			chams::save();
+			save_settings_with_capture(s);
 		if (ImGui::SliderInt("Stroke size - covered area (px)##strokesizethrough", &s.stroke_through_size, 1, 16))
-			chams::save();
+			save_settings_with_capture(s);
 		ImGui::TextDisabled("open = plain sight | covered = behind a wall, glue wall, car or another body");
 		ImGui::TextDisabled("each width is saved independently and applied in real time.");
 		ImGui::TextDisabled("thickness of the 2D outline in pixels; it grows with the character on screen, never below 2 px");
 
 		if (ImGui::SliderFloat("Stroke strength", &s.stroke_alpha, 0.05f, 1.0f, "%.2f"))
-			chams::save();
+			save_settings_with_capture(s);
 
 		ImGui::Spacing();
 		ImGui::Spacing();
 		if (ImGui::Checkbox("Open part (not covered)##strokeopen", &s.stroke_open))
-			chams::save();
+			save_settings_with_capture(s);
 		if (s.stroke_open)
 		{
 			if (ImGui::ColorEdit3("Open part - colour##stopen", s.stroke_open_color, ImGuiColorEditFlags_NoInputs))
-				chams::save();
+				save_settings_with_capture(s);
 		}
 		ImGui::TextDisabled("the line you see around the character in plain sight");
 
 		ImGui::Spacing();
 		if (ImGui::ColorEdit3("Through walls - colour##stcolour", s.stroke_through_color, ImGuiColorEditFlags_NoInputs))
-			chams::save();
+			save_settings_with_capture(s);
 		ImGui::TextDisabled("the line where a wall, a car or another body is in front");
 		ImGui::TextDisabled("both use the v2.3 mask+ring method, so the body is never filled");
 
@@ -249,26 +287,26 @@ void reshade::runtime::draw_gui_chams()
 
 		// ---------------- 3D wireframe stroke (its own switch) ----------------
 		if (ImGui::Checkbox("3D wireframe stroke##wire", &s.wire))
-			chams::save();
+			save_settings_with_capture(s);
 		ImGui::SameLine();
 		ImGui::TextDisabled("%s", s.wire ? "on" : "off");
 
 		if (s.wire)
 		{
 			if (ImGui::SliderInt("Wire size (px)##wiresize", &s.wire_size, 1, 8))
-				chams::save();
+				save_settings_with_capture(s);
 			if (ImGui::SliderFloat("Wire strength", &s.wire_alpha, 0.05f, 1.0f, "%.2f"))
-				chams::save();
+				save_settings_with_capture(s);
 
 			if (ImGui::ColorEdit3("Wire through walls - colour", s.wire_through_color, ImGuiColorEditFlags_NoInputs))
-				chams::save();
+				save_settings_with_capture(s);
 
 			if (ImGui::Checkbox("Wire open part (not covered)##wireopen", &s.wire_open))
-				chams::save();
+				save_settings_with_capture(s);
 			if (s.wire_open)
 			{
 				if (ImGui::ColorEdit3("Wire open part - colour", s.wire_open_color, ImGuiColorEditFlags_NoInputs))
-					chams::save();
+					save_settings_with_capture(s);
 			}
 			ImGui::TextDisabled("triangles of the body drawn as lines - independent of the 2D outline");
 		}
@@ -339,7 +377,7 @@ void reshade::runtime::draw_gui_chams()
 	if (ImGui::Button("Reset"))
 	{
 		s = chams::settings();
-		chams::save();
+		save_settings_with_capture(s);
 	}
 
 	ImGui::SameLine();

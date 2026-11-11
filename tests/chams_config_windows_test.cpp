@@ -29,6 +29,13 @@ static DWORD WINAPI test_temp_path(DWORD size, LPWSTR out)
 #include "../source/chams.cpp"
 #undef GetTempPathW
 #undef SHGetFolderPathW
+// Persistence test runs without the GL capture subsystem or a current context.
+namespace reshade::chams::capture {
+ bool runtime_enabled() { return false; }
+ uintptr_t native_context() { return 0; }
+ uintptr_t native_surface() { return 0; }
+ void runtime_marker(uintptr_t, uintptr_t, const char *) {}
+}
 namespace reshade::log { void message(level, const char *, ...) {} }
 std::filesystem::path g_reshade_dll_path, g_reshade_base_path, g_target_executable_path;
 

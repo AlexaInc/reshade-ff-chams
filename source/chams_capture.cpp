@@ -27,8 +27,9 @@ namespace reshade::chams::capture
   const auto unix_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
     std::chrono::system_clock::now().time_since_epoch()).count();
   _attempted = _queued = _written = _dropped = 0;
-  _frames = _contexts = _draws = _files = _enqueue_ns = 0;
-  _queue_full = _oversized = _io_dropped = _allocation_failed = _high_water = 0;
+  _frames = _contexts = _draws = _files = _bytes = _enqueue_ns = 0;
+  _queue_full = _oversized = _io_dropped = _allocation_failed = _high_water = _partial_frames = 0;
+  _instrumentation_ns.store(0); _instrumentation_samples.store(0);
   if (!open_next()) { _io_error = true; return false; }
   _files = _writer_files;
   try {
@@ -65,6 +66,7 @@ namespace reshade::chams::capture
   _ready.notify_one();
   _worker.join();
  }
+ void recorder::instrumentation_time(uint64_t ns) { _instrumentation_ns.fetch_add(ns, std::memory_order_relaxed); _instrumentation_samples.fetch_add(1, std::memory_order_relaxed); }
  void recorder::external_drop()
  {
   std::lock_guard<std::mutex> lock(_mutex);
@@ -75,9 +77,10 @@ namespace reshade::chams::capture
  {
   std::lock_guard<std::mutex> lock(_mutex);
   return {_enabled.load(), _io_error, _attempted, _queued, _written, _dropped,
-          _frames, _contexts, _draws, _files, _enqueue_ns,
+          _frames, _contexts, _draws, _files, _bytes, _enqueue_ns,
           _start_ns == 0 ? 0 : (_end_ns ? _end_ns : now_ns()) - _start_ns,
-          _queue_full, _oversized, _io_dropped, _allocation_failed, _high_water};
+          _instrumentation_ns.load(std::memory_order_relaxed), _instrumentation_samples.load(std::memory_order_relaxed),
+          _queue_full, _oversized, _io_dropped, _allocation_failed, _high_water, _partial_frames};
  }
  bool recorder::emit(const char *kind, uint64_t context, uint64_t frame, const std::string &body)
  {
@@ -109,6 +112,7 @@ namespace reshade::chams::capture
    if (std::string(kind) == "draw") ++_draws;
    else if (std::string(kind) == "frame_begin") ++_frames;
    else if (std::string(kind) == "context_create" || std::string(kind) == "context_observed") ++_contexts;
+   else if (std::string(kind) == "frame_end" && (body.find("session_stop_incomplete") != std::string::npos || body.find("context_destroyed") != std::string::npos)) ++_partial_frames;
   } catch (...) { ++_dropped; ++_allocation_failed; _enqueue_ns += now_ns() - begin; return false; }
   _enqueue_ns += now_ns() - begin;
   lock.unlock(); _ready.notify_one(); return true;
@@ -137,15 +141,18 @@ namespace reshade::chams::capture
   // Summary is a separate file and is not included in the sequenced event stream.
   std::ofstream f(_directory / "summary.json", std::ios::binary | std::ios::trunc);
   if (f) {
-   f << "{\"v\":1,\"complete\":" << (s.io_error || s.dropped ? "false" : "true")
+   f << "{\"v\":1,\"complete\":" << (s.io_error || s.dropped || s.partial_frames ? "false" : "true")
+     << ",\"io_error\":" << (s.io_error ? "true" : "false")
+     << ",\"queue_capacity_records\":" << _queue_limit << ",\"rotation_target_bytes\":" << _rotate_bytes
      << ",\"attempted\":" << s.attempted << ",\"queued\":" << s.queued
      << ",\"written\":" << s.written << ",\"dropped\":" << s.dropped
      << ",\"frames\":" << s.frames << ",\"contexts\":" << s.contexts
-     << ",\"draws\":" << s.draws << ",\"files\":" << s.files
+     << ",\"draws\":" << s.draws << ",\"files\":" << s.files << ",\"bytes\":" << s.bytes
      << ",\"elapsed_ns\":" << s.elapsed_ns << ",\"enqueue_ns\":" << s.enqueue_ns
+     << ",\"instrumentation_ns\":" << s.instrumentation_ns << ",\"instrumentation_samples\":" << s.instrumentation_samples
      << ",\"queue_full\":" << s.queue_full << ",\"oversized\":" << s.oversized
      << ",\"io_dropped\":" << s.io_dropped << ",\"allocation_failed\":" << s.allocation_failed
-     << ",\"high_water\":" << s.high_water << "}\n";
+     << ",\"high_water\":" << s.high_water << ",\"partial_frames\":" << s.partial_frames << "}\n";
    f.flush();
   }
   if (!f) { std::lock_guard<std::mutex> lock(_mutex); _io_error = true; }
@@ -171,7 +178,7 @@ namespace reshade::chams::capture
    }
    lock.lock();
    _files = _writer_files;
-   if (ok) ++_written;
+   if (ok) { ++_written; _bytes += item.value.size(); }
    else { _io_error = true; ++_dropped; ++_io_dropped; }
   }
   _file.flush(); const bool flush_ok = static_cast<bool>(_file); _file.close();
@@ -203,52 +210,87 @@ namespace reshade::chams::capture
   std::lock_guard<std::mutex> lock(_mutex);
   auto it = _contexts.find(native);
   if (it == _contexts.end()) return;
-  if (it->second.begun) _recorder.emit("frame_end", it->second.id, it->second.frame, "\"reason\":\"context_destroyed\"");
-  _recorder.emit("context_destroy", it->second.id, it->second.frame);
+  for (const auto &entry : it->second.streams) if (entry.second.begun)
+   _recorder.emit("frame_end", it->second.id, entry.second.frame, "\"surface\":" + std::to_string(entry.first) + ",\"reason\":\"context_destroyed\"");
+  _recorder.emit("context_destroy", it->second.id, 0);
   _contexts.erase(it);
  }
  void correlator::switched(uintptr_t native)
  {
   std::lock_guard<std::mutex> lock(_mutex);
   if (!native) { _recorder.emit("context_switch", 0, 0); return; }
-  auto &c = ensure(native); _recorder.emit("context_switch", c.id, c.frame);
+  auto &c = ensure(native); _recorder.emit("context_switch", c.id, 0);
  }
- void correlator::begin(context &c)
+ void correlator::shared(uintptr_t first, uintptr_t second, bool succeeded)
  {
-  if (!c.begun) { _recorder.emit("frame_begin", c.id, c.frame); c.begun = true; }
+  std::lock_guard<std::mutex> lock(_mutex);
+  const uint64_t a = first ? ensure(first).id : 0;
+  const uint64_t b = second ? ensure(second).id : 0;
+  _recorder.emit("context_share", a, 0, "\"peer_context\":" + std::to_string(b) + (succeeded ? ",\"success\":true" : ",\"success\":false"));
  }
- void correlator::draw(uintptr_t native, const std::string &body)
+ uint64_t correlator::surface_locked(uintptr_t native)
+ {
+  if (!native) return 0;
+  auto it = _surfaces.find(native); if (it != _surfaces.end()) return it->second;
+  const auto id = ++_next_surface; _surfaces.emplace(native, id);
+  _recorder.emit("surface_observed", 0, 0, "\"surface\":" + std::to_string(id)); return id;
+ }
+ uint64_t correlator::surface(uintptr_t native) { std::lock_guard<std::mutex> lock(_mutex); return surface_locked(native); }
+ void correlator::begin(context &c, uint64_t surface)
+ {
+  auto &stream = c.streams[surface];
+  if (!stream.begun) { _recorder.emit("frame_begin", c.id, stream.frame, "\"surface\":" + std::to_string(surface) + (stream.frame == 1 ? ",\"begin_reason\":\"first_observed_unknown\"" : ",\"begin_reason\":\"after_present\"")); stream.begun = true; }
+ }
+ void correlator::draw(uintptr_t native, const std::string &body, uint64_t surface)
  {
   if (!native) { _recorder.emit("draw", 0, 0, body); return; }
   std::lock_guard<std::mutex> lock(_mutex);
-  auto &c = ensure(native); begin(c); _recorder.emit("draw", c.id, c.frame, body);
+  auto &c = ensure(native); begin(c, surface);
+  _recorder.emit("draw", c.id, c.streams[surface].frame, "\"surface\":" + std::to_string(surface) + (body.empty() ? "" : "," + body));
  }
- void correlator::event(uintptr_t native, const char *kind, const std::string &body)
+ draw_ticket correlator::begin_draw(uintptr_t native, uint64_t surface)
+ {
+  std::lock_guard<std::mutex> lock(_mutex);
+  draw_ticket t; t.id = ++_next_draw; t.surface = surface;
+  if (native) { auto &c = ensure(native); begin(c, surface); t.context = c.id; t.frame = c.streams[surface].frame; }
+  _recorder.emit("draw_begin", t.context, t.frame, "\"surface\":" + std::to_string(t.surface) + ",\"draw_id\":" + std::to_string(t.id));
+  return t;
+ }
+ void correlator::end_draw(const draw_ticket &ticket, const std::string &body)
+ {
+  _recorder.emit("draw", ticket.context, ticket.frame,
+   "\"surface\":" + std::to_string(ticket.surface) + ",\"draw_id\":" + std::to_string(ticket.id) + (body.empty() ? "" : "," + body));
+ }
+ void correlator::event(uintptr_t native, const char *kind, const std::string &body, uint64_t surface)
  {
   if (!native) { _recorder.emit(kind, 0, 0, body); return; }
   std::lock_guard<std::mutex> lock(_mutex);
-  auto &c = ensure(native); begin(c); _recorder.emit(kind, c.id, c.frame, body);
+  auto &c = ensure(native);
+  if (surface == uint64_t(-1)) _recorder.emit(kind, c.id, 0, body);
+  else { begin(c, surface); _recorder.emit(kind, c.id, c.streams[surface].frame, "\"surface\":" + std::to_string(surface) + (body.empty() ? "" : "," + body)); }
  }
- void correlator::present_begin(uintptr_t native)
+ void correlator::present_begin(uintptr_t native, uintptr_t native_surface)
  {
   if (!native) return;
   std::lock_guard<std::mutex> lock(_mutex);
-  auto &c = ensure(native); begin(c); _recorder.emit("present_begin", c.id, c.frame);
+  auto &c = ensure(native); const auto sid = surface_locked(native_surface); begin(c, sid);
+  _recorder.emit("present_begin", c.id, c.streams[sid].frame, "\"surface\":" + std::to_string(sid));
  }
- void correlator::present(uintptr_t native, bool succeeded)
+ void correlator::present(uintptr_t native, bool succeeded, uintptr_t native_surface)
  {
   if (!native) return;
   std::lock_guard<std::mutex> lock(_mutex);
-  auto &c = ensure(native); begin(c);
-  _recorder.emit("present", c.id, c.frame, succeeded ? "\"success\":true" : "\"success\":false");
-  if (succeeded) { _recorder.emit("frame_end", c.id, c.frame, "\"reason\":\"present\""); ++c.frame; c.begun = false; }
+  auto &c = ensure(native); const auto sid = surface_locked(native_surface); begin(c, sid); auto &stream = c.streams[sid];
+  _recorder.emit("present", c.id, stream.frame, "\"surface\":" + std::to_string(sid) + (succeeded ? ",\"success\":true" : ",\"success\":false"));
+  if (succeeded) { _recorder.emit("frame_end", c.id, stream.frame, "\"surface\":" + std::to_string(sid) + ",\"reason\":\"present\""); ++stream.frame; stream.begun = false; }
  }
  void correlator::finish()
  {
   std::lock_guard<std::mutex> lock(_mutex);
   for (const auto &entry : _contexts) {
    const auto &c = entry.second;
-   if (c.begun) _recorder.emit("frame_end", c.id, c.frame, "\"reason\":\"session_stop_incomplete\"");
+   for (const auto &stream : c.streams) if (stream.second.begun)
+    _recorder.emit("frame_end", c.id, stream.second.frame, "\"surface\":" + std::to_string(stream.first) + ",\"reason\":\"session_stop_incomplete\"");
   }
   _contexts.clear();
  }
@@ -286,6 +328,7 @@ namespace reshade::chams::capture
   if (!ok) return false;
   try { c.correlation = std::make_unique<correlator>(c.output); }
   catch (...) { lock.unlock(); c.output.stop(); return false; }
+  invalidate_metadata(); // Re-emit program metadata in every new session.
   c.active.store(true, std::memory_order_release); return true;
  }
  void runtime_stop()
@@ -298,7 +341,8 @@ namespace reshade::chams::capture
    c.flight_ready.wait(lock, [&] { return c.inflight == 0; });
   }
   { std::unique_lock<std::shared_mutex> lock(c.gate);
-   c.correlation->finish(); c.correlation.reset();
+   try { c.correlation->finish(); } catch (...) { c.output.external_drop(); }
+   c.correlation.reset();
   }
   c.output.stop();
  }
@@ -309,31 +353,60 @@ namespace reshade::chams::capture
   if (!c.active.load(std::memory_order_relaxed)) return false;
   std::lock_guard<std::mutex> flight(c.flight_mutex); ++c.inflight; return true;
  }
- void runtime_end_draw(uintptr_t n, const std::string *body) noexcept
+ draw_ticket runtime_bind_draw(uintptr_t n, uint64_t surface) noexcept
+ {
+  auto &c = controller();
+  try { std::shared_lock<std::shared_mutex> lock(c.gate); if (c.correlation) return c.correlation->begin_draw(n, surface); }
+  catch (...) { c.output.external_drop(); }
+  return {};
+ }
+ void runtime_end_draw(const draw_ticket &ticket, const std::string *body) noexcept
  {
   auto &c = controller();
   try {
    std::shared_lock<std::shared_mutex> lock(c.gate);
-   if (!body || !c.correlation) c.output.external_drop();
-   else c.correlation->draw(n, *body);
+   if (!body || !c.correlation || !ticket.id) c.output.external_drop();
+   else c.correlation->end_draw(ticket, *body);
   } catch (...) { c.output.external_drop(); }
   { std::lock_guard<std::mutex> lock(c.flight_mutex); if (c.inflight) --c.inflight; }
   c.flight_ready.notify_all();
+ }
+ uint64_t runtime_inflight_surface(uintptr_t native) noexcept
+ {
+  auto &c = controller();
+  try { std::shared_lock<std::shared_mutex> lock(c.gate); return c.correlation ? c.correlation->surface(native) : 0; }
+  catch (...) { c.output.external_drop(); return 0; }
+ }
+ void runtime_instrumentation_time(uint64_t ns) noexcept { controller().output.instrumentation_time(ns); }
+ void runtime_record_loss() noexcept { try { controller().output.external_drop(); } catch (...) {} }
+ void runtime_inflight_event(uintptr_t n, const char *kind, const std::string &body, uint64_t surface) noexcept
+ {
+  auto &c = controller();
+  try { std::shared_lock<std::shared_mutex> lock(c.gate);
+   if (c.correlation) c.correlation->event(n, kind, body, surface); else c.output.external_drop();
+  } catch (...) { c.output.external_drop(); }
  }
  status runtime_status() { return controller().output.snapshot(); }
  std::filesystem::path runtime_directory() { return controller().output.directory(); }
  template <typename F> void runtime_event(F &&f)
  {
   auto &c = controller(); if (!c.active.load(std::memory_order_acquire)) return;
-  std::shared_lock<std::shared_mutex> lock(c.gate);
-  if (c.active.load(std::memory_order_relaxed) && c.correlation) f(*c.correlation);
+  try { std::shared_lock<std::shared_mutex> lock(c.gate);
+   if (c.active.load(std::memory_order_relaxed) && c.correlation) f(*c.correlation);
+  } catch (...) { c.output.external_drop(); }
  }
  void runtime_created(uintptr_t n) { runtime_event([&](correlator &c){ c.created(n); }); }
  void runtime_destroyed(uintptr_t n) { runtime_event([&](correlator &c){ c.destroyed(n); }); }
  void runtime_switched(uintptr_t n) { runtime_event([&](correlator &c){ c.switched(n); }); }
+ void runtime_shared(uintptr_t a, uintptr_t b, bool ok) { runtime_event([&](correlator &c){ c.shared(a, b, ok); }); }
+ void runtime_marker(uintptr_t n, uintptr_t surface, const char *source)
+ {
+  runtime_event([&](correlator &c){ const auto sid = c.surface(surface);
+   c.event(n, "marker", source && std::string(source) == "f9" ? "\"source\":\"f9\"" : "\"source\":\"menu\"", sid); });
+ }
  void runtime_draw(uintptr_t n, const std::string &body) { runtime_event([&](correlator &c){ c.draw(n, body); }); }
  void runtime_event(uintptr_t n, const char *kind, const std::string &body) { runtime_event([&](correlator &c){ c.event(n, kind, body); }); }
- void runtime_present_begin(uintptr_t n) { runtime_event([&](correlator &c){ c.present_begin(n); }); }
- void runtime_present(uintptr_t n, bool ok) { runtime_event([&](correlator &c){ c.present(n, ok); }); }
+ void runtime_present_begin(uintptr_t n, uintptr_t surface) { runtime_event([&](correlator &c){ c.present_begin(n, surface); }); }
+ void runtime_present(uintptr_t n, uintptr_t surface, bool ok) { runtime_event([&](correlator &c){ c.present(n, ok, surface); }); }
 
 }

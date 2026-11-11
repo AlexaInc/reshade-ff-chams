@@ -212,12 +212,12 @@ namespace reshade::chams
 				(before.frame_min < 1.5f || before.frame_min > 5.0f) ? "out_of_range" :
 				(before.cand < 0 || std::fabs(before.frame_min - before.cand) > 0.3f) ? "candidate_changed" :
 				(before.stable < 30 && o.stable >= 30) ? "acquired" : "candidate_continued";
-			try { char line[512]; std::snprintf(line, sizeof(line),
-				"\"reason\":\"%s\",\"legacy_global_frame\":%u,\"frame_min\":%.6g,\"before_candidate\":%.6g,\"before_estimate\":%.6g,\"before_stable\":%d,\"candidate\":%.6g,\"estimate\":%.6g,\"stable\":%d",
-				reason, g_frame_id, std::isfinite(before.frame_min) ? before.frame_min : -1,
-				std::isfinite(before.cand) ? before.cand : -1, std::isfinite(before.own_est) ? before.own_est : -1, before.stable,
-				std::isfinite(o.cand) ? o.cand : -1, std::isfinite(o.own_est) ? o.own_est : -1, o.stable);
-				capture::runtime_event(capture::native_context(), "own_tracker", line);
+			try { std::string line = std::string("\"reason\":\"") + reason + "\",\"legacy_global_frame\":" + std::to_string(g_frame_id) +
+				",\"frame_min\":" + capture::json_number(before.frame_min) + ",\"before_candidate\":" + capture::json_number(before.cand) +
+				",\"before_estimate\":" + capture::json_number(before.own_est) + ",\"before_stable\":" + std::to_string(before.stable) +
+				",\"candidate\":" + capture::json_number(o.cand) + ",\"estimate\":" + capture::json_number(o.own_est) + ",\"stable\":" + std::to_string(o.stable);
+				capture::runtime_inflight_event(capture::native_context(), "own_tracker", line,
+					capture::runtime_inflight_surface(capture::native_surface()));
 			} catch (...) { /* diagnostic must not terminate the renderer */ }
 		}
 		o.frame_min = 1e9f;
@@ -1126,9 +1126,21 @@ namespace reshade::chams
 
 	struct capture_program_metadata
 	{
-		uintptr_t context = 0; GLint program = 0; int tokens = 0, skin = 0, wall = 0;
+		uintptr_t context = 0; uint64_t epoch = 0; GLint program = 0; int tokens = 0, skin = 0, wall = 0;
 		matrix_loc object, view, projection; GLint camera = -1;
 	};
+	inline std::string capture_json_string(const char *data, size_t len)
+	{
+		static const char hex[] = "0123456789abcdef";
+		std::string s = "\"";
+		for (size_t i = 0; i < len; ++i) {
+			const unsigned char c = static_cast<unsigned char>(data[i]);
+			if (c == '\\' || c == '\"') { s += '\\'; s += static_cast<char>(c); }
+			else if (c < 32 || c >= 127) { s += "\\u00"; s += hex[c >> 4]; s += hex[c & 15]; }
+			else s += static_cast<char>(c);
+		}
+		return s + "\"";
+	}
 	inline const capture_program_metadata &capture_program(uintptr_t context, GLint program)
 	{
 		struct cache_type { uint64_t epoch = 0; unsigned used = 0; capture_program_metadata entries[128]; };
@@ -1138,7 +1150,7 @@ namespace reshade::chams
 		for (unsigned i = 0; i < std::min(cache.used, 128u); ++i)
 			if (cache.entries[i].context == context && cache.entries[i].program == program) return cache.entries[i];
 		auto &p = cache.entries[cache.used++ % 128]; p = capture_program_metadata{};
-		p.context = context; p.program = program;
+		p.context = context; p.program = program; p.epoch = epoch;
 		for (size_t i = 0; i < sizeof(k_chara_tokens)/sizeof(k_chara_tokens[0]); ++i)
 			if (gl.GetUniformLocation(program, k_chara_tokens[i]) != -1) p.tokens |= (1 << i);
 		for (size_t i = 0; i < sizeof(k_skin_uniforms)/sizeof(k_skin_uniforms[0]); ++i)
@@ -1151,7 +1163,51 @@ namespace reshade::chams
 		static const char *const projections[] = {"hlslcc_mtx4x4unity_MatrixVP", "UNITY_MATRIX_VP", "unity_MatrixVP"};
 		p.object = resolve_matrix(program, objects, 4); p.view = resolve_matrix(program, views, 3);
 		p.projection = resolve_matrix(program, projections, 3); p.camera = gl.GetUniformLocation(program, "_WorldSpaceCameraPos");
+		// Emit introspection once per cached context/program/epoch. Bounded driver
+		// names and counts are explicitly flagged if truncated; no shader source.
+		try {
+			GLint uniform_count = 0, shader_count = 0, link_status = 0;
+			if (gl.GetProgramiv) { gl.GetProgramiv(program, GL_ACTIVE_UNIFORMS, &uniform_count);
+				gl.GetProgramiv(program, GL_ATTACHED_SHADERS, &shader_count); gl.GetProgramiv(program, GL_LINK_STATUS, &link_status); }
+			const int safe_uniforms = std::max(0, std::min(uniform_count, 4096));
+			const int safe_shaders = std::max(0, std::min(shader_count, 32));
+			std::string head = "\"program\":" + std::to_string(program) + ",\"epoch\":" + std::to_string(epoch) +
+				",\"link_status\":" + std::to_string(link_status) + ",\"uniform_count\":" + std::to_string(uniform_count) +
+				",\"uniforms_recordable\":" + std::to_string(gl.GetActiveUniform ? safe_uniforms : 0) +
+				",\"shader_count\":" + std::to_string(shader_count) + ",\"shaders_recordable\":" + std::to_string(gl.GetAttachedShaders ? safe_shaders : 0);
+			capture::runtime_inflight_event(context, "program_info", head);
+			if (gl.GetActiveUniform) for (int i = 0; i < safe_uniforms; ++i) {
+				char name[256] = {}; GLsizei len = 0; GLint size = 0; GLenum type = 0;
+				gl.GetActiveUniform(program, i, sizeof(name), &len, &size, &type, name);
+				const size_t chars = static_cast<size_t>(std::max(0, std::min<int>(len, sizeof(name)-1)));
+				std::string row = "\"program\":" + std::to_string(program) + ",\"epoch\":" + std::to_string(epoch) +
+					",\"index\":" + std::to_string(i) + ",\"name\":" + capture_json_string(name, chars) +
+					",\"name_truncated\":" + (len >= static_cast<GLsizei>(sizeof(name)-1) ? "true" : "false") +
+					",\"size\":" + std::to_string(size) + ",\"type\":" + std::to_string(type);
+				capture::runtime_inflight_event(context, "program_uniform", row);
+			}
+			if (gl.GetAttachedShaders && gl.GetShaderiv && safe_shaders) {
+				GLuint shaders[32] = {}; GLsizei got = 0; gl.GetAttachedShaders(program, safe_shaders, &got, shaders);
+				for (GLsizei i = 0; i < got && i < safe_shaders; ++i) { GLint type = 0; gl.GetShaderiv(shaders[i], GL_SHADER_TYPE, &type);
+					std::string row = "\"program\":" + std::to_string(program) + ",\"epoch\":" + std::to_string(epoch) +
+						",\"shader\":" + std::to_string(shaders[i]) + ",\"type\":" + std::to_string(type);
+					capture::runtime_inflight_event(context, "program_shader", row);
+				}
+			}
+		} catch (...) { capture::runtime_record_loss(); }
 		return p;
+	}
+
+	// GL may return a full mat4 even for a location spelled like an array.
+	// Always query into a 16-float scratch buffer so a surprising uniform type
+	// cannot overwrite the capture object's adjacent fields.
+	inline void capture_read_matrix(GLint program, const matrix_loc &loc, GLfloat out[16])
+	{
+		if (!loc.valid() || !gl.GetUniformfv) return;
+		if (loc.array_style) for (int i = 0; i < 4; ++i) {
+			GLfloat tmp[16] = {}; gl.GetUniformfv(program, loc.loc[i], tmp);
+			std::memcpy(out + 4*i, tmp, 4*sizeof(GLfloat));
+		} else { GLfloat tmp[16] = {}; gl.GetUniformfv(program, loc.plain, tmp); std::memcpy(out, tmp, sizeof(tmp)); }
 	}
 
 	// Snapshot original game draw state; the guard records even early exits.
@@ -1159,20 +1215,30 @@ namespace reshade::chams
 	// shader source, texture contents or host file paths are recorded here.
 	struct capture_gl_scope
 	{
-		bool active = false; uintptr_t context = 0;
+		bool active = false; uintptr_t context = 0; uint64_t surface = 0, program_epoch = 0, preparation_ns = 0;
+		capture::draw_ticket ticket;
 		const char *api = "unknown", *decision = "not_evaluated";
 		GLint mode = 0, count = 0, program = 0, array = 0, element = 0, vao = 0, framebuffer = 0;
+		GLint first = -1, instances = -1, index_type = -1, base_vertex = 0, base_instance = 0, draw_count = -1, stride = -1;
 		GLint viewport[4] = {}, depth_func = 0, blend_src = 0, blend_dst = 0;
 		int depth_test = 0, depth_write = 0, blend = 0, uniform_bits = 0, skin_bits = 0, wall_bits = 0, wall_hint = -1, matrix_bits = 0;
 		int detect = 0, renderer = 0, hide = 0, budget = 0, stable = 0, has_info = 0;
+		int enabled = 0, through = 0, glow = 0, stroke = 0, wire = 0; float own_cap = 0;
 		float estimate = -1, distance = -1, world[16] = {}, view[16] = {}, vp[16] = {}, camera[3] = {};
 		const char *dist_source = "unknown";
 		capture_gl_scope(const char *name, GLenum prim, GLsizei n) : api(name), mode(prim), count(n)
 		{
+			if (!capture::runtime_enabled()) return;
+			const auto start = std::chrono::steady_clock::now();
 			if (!capture::runtime_begin_draw()) return;
-			active = true; context = capture::native_context();
+			active = true; context = capture::native_context(); surface = capture::runtime_inflight_surface(capture::native_surface());
+			ticket = capture::runtime_bind_draw(context, surface);
 			detect = g_settings.detect_mode; renderer = g_settings.render_mode; hide = g_settings.hide_own; budget = g_budget_left;
-			if (!g_opengl_context || !gl.GetIntegerv) return;
+			enabled = g_settings.enabled; through = g_settings.through_walls; glow = g_settings.glow; stroke = g_settings.stroke; wire = g_settings.wire;
+			own_cap = std::isfinite(g_settings.own_distance) ? g_settings.own_distance : -1;
+			if (!g_opengl_context || !gl.GetIntegerv) {
+				preparation_ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count()); return;
+			}
 			gl.GetIntegerv(GL_CURRENT_PROGRAM, &program);
 			gl.GetIntegerv(GL_ARRAY_BUFFER_BINDING, &array); gl.GetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &element);
 			gl.GetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao); gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &framebuffer);
@@ -1182,42 +1248,46 @@ namespace reshade::chams
 			if (gl.GetBooleanv) { GLboolean b = GL_FALSE; gl.GetBooleanv(GL_DEPTH_WRITEMASK, &b); depth_write = b; }
 			if (program && gl.GetUniformLocation) {
 				const auto &m = capture_program(context, program);
-				uniform_bits = m.tokens; skin_bits = m.skin; wall_bits = m.wall;
+				uniform_bits = m.tokens; skin_bits = m.skin; wall_bits = m.wall; program_epoch = m.epoch;
 				program_info p{}; p.program = program; p.obj_to_world = m.object; p.view = m.view; p.view_proj = m.projection;
 				matrix_bits = (m.object.valid() ? 1 : 0) | (m.view.valid() ? 2 : 0) | (m.projection.valid() ? 4 : 0) | (m.camera != -1 ? 8 : 0);
 				if (gl.GetUniformfv && matrix_bits) {
-					read_matrix(program, m.object, p.world); read_matrix(program, m.view, p.view_m); read_matrix(program, m.projection, p.vp_m);
+					capture_read_matrix(program, m.object, p.world); capture_read_matrix(program, m.view, p.view_m); capture_read_matrix(program, m.projection, p.vp_m);
 					if (m.camera != -1) { GLfloat tmp[16] = {}; gl.GetUniformfv(program, m.camera, tmp); std::memcpy(p.cam_uniform, tmp, sizeof(p.cam_uniform)); p.loc_cam_pos = m.camera; }
-					state(p, object_distance(p));
+					state(p, object_distance(p), false);
 				}
 			}
+			preparation_ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
 		}
-		void state(const program_info &p, float d)
+		void state(const program_info &p, float d, bool capture_tracker = true)
 		{
 			if (!active) return;
 			has_info = 1; distance = std::isfinite(d) ? d : -1; dist_source = p.dist_source;
 			std::memcpy(world, p.world, sizeof(world)); std::memcpy(view, p.view_m, sizeof(view));
 			std::memcpy(vp, p.vp_m, sizeof(vp)); std::memcpy(camera, p.cam_uniform, sizeof(camera));
-			estimate = std::isfinite(own().own_est) ? own().own_est : -1; stable = own().stable;
+			if (capture_tracker) { estimate = std::isfinite(own().own_est) ? own().own_est : -1; stable = own().stable; }
 		}
 		~capture_gl_scope()
 		{
 			if (!active) return;
+			const auto serialize_start = std::chrono::steady_clock::now();
 			try {
 				char b[4096]; int n = std::snprintf(b, sizeof(b),
-					"\"api\":\"%s\",\"mode\":%d,\"count\":%d,\"program\":%d,\"array_buffer\":%d,\"element_buffer\":%d,\"vao\":%d,\"framebuffer\":%d,\"viewport\":[%d,%d,%d,%d],\"depth_test\":%d,\"depth_write\":%d,\"depth_func\":%d,\"blend\":%d,\"blend_src\":%d,\"blend_dst\":%d,\"token_bits\":%d,\"skin_bits\":%d,\"wall_bits\":%d,\"wall_hint\":%d,\"matrix_bits\":%d,\"detect\":%d,\"renderer\":%d,\"hide_own\":%d,\"budget\":%d,\"decision\":\"%s\",\"has_info\":%d,\"distance\":%.6g,\"distance_source\":\"%s\",\"own_est\":%.6g,\"stable\":%d",
-					api, mode, count, program, array, element, vao, framebuffer, viewport[0], viewport[1], viewport[2], viewport[3],
-					depth_test, depth_write, depth_func, blend, blend_src, blend_dst, uniform_bits, skin_bits, wall_bits, wall_hint, matrix_bits, detect, renderer, hide, budget, decision, has_info, distance, dist_source, estimate, stable);
-				if (n < 0 || static_cast<size_t>(n) >= sizeof(b)) { capture::runtime_end_draw(context, nullptr); return; }
+					"\"api\":\"%s\",\"mode\":%d,\"count\":%d,\"first\":%d,\"instances\":%d,\"index_type\":%d,\"base_vertex\":%d,\"base_instance\":%d,\"draw_count\":%d,\"indirect_stride\":%d,\"program\":%d,\"program_epoch\":%llu,\"array_buffer\":%d,\"element_buffer\":%d,\"vao\":%d,\"framebuffer\":%d,\"viewport\":[%d,%d,%d,%d],\"depth_test\":%d,\"depth_write\":%d,\"depth_func\":%d,\"blend\":%d,\"blend_src\":%d,\"blend_dst\":%d,\"token_bits\":%d,\"skin_bits\":%d,\"wall_bits\":%d,\"wall_hint\":%d,\"matrix_bits\":%d,\"detect\":%d,\"renderer\":%d,\"hide_own\":%d,\"enabled\":%d,\"through_walls\":%d,\"glow\":%d,\"stroke\":%d,\"wire\":%d,\"budget\":%d,\"decision\":\"%s\",\"has_info\":%d,\"distance_source\":\"%s\",\"stable\":%d",
+					api, mode, count, first, instances, index_type, base_vertex, base_instance, draw_count, stride, program, static_cast<unsigned long long>(program_epoch), array, element, vao, framebuffer, viewport[0], viewport[1], viewport[2], viewport[3],
+					depth_test, depth_write, depth_func, blend, blend_src, blend_dst, uniform_bits, skin_bits, wall_bits, wall_hint, matrix_bits, detect, renderer, hide, enabled, through, glow, stroke, wire, budget, decision, has_info, dist_source, stable);
+				if (n < 0 || static_cast<size_t>(n) >= sizeof(b)) { capture::runtime_end_draw(ticket, nullptr); return; }
 				std::string body(b, static_cast<size_t>(n));
+				body += ",\"own_cap\":" + capture::json_number(own_cap) + ",\"distance\":" + capture::json_number(distance) + ",\"own_est\":" + capture::json_number(estimate);
 				auto append = [&](const char *key, const float *v, int size) {
 					body += ",\""; body += key; body += "\":[";
 					for (int i = 0; i < size; ++i) { if (i) body += ","; if (!std::isfinite(v[i])) body += "null";
-						else { char t[48]; std::snprintf(t, sizeof(t), "%.9g", v[i]); body += t; } } body += "]";
+						else body += capture::json_number(v[i]); } body += "]";
 				};
 				if (has_info) { append("world", world, 16); append("view", view, 16); append("view_projection", vp, 16); append("camera_uniform", camera, 3); }
-				capture::runtime_end_draw(context, &body);
-			} catch (...) { capture::runtime_end_draw(context, nullptr); }
+				capture::runtime_instrumentation_time(preparation_ns + static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - serialize_start).count()));
+				capture::runtime_end_draw(ticket, &body);
+			} catch (...) { capture::runtime_end_draw(ticket, nullptr); }
 		}
 	};
 

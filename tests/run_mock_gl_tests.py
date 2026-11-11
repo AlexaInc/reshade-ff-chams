@@ -5,7 +5,7 @@ root = pathlib.Path(__file__).resolve().parents[1]
 s = (root/'source/chams_gl.inl').read_text() + (root/'source/chams_overlay.inl').read_text()
 tokens = sorted(set(re.findall(r'\bGL_[A-Z0-9_]+\b', s)) - {'GL_TRUE','GL_FALSE'})
 names = sorted(set(re.findall(r'\bgl\.([A-Za-z0-9_]+)', s)))
-custom = {'GetUniformLocation','GetIntegerv','GetBooleanv','GetFloatv','IsEnabled','Enable','Disable','ColorMask','DepthMask','DepthFunc','DepthRange','BlendFuncSeparate','BlendFunc','BlendEquationSeparate','BlendEquation','BlendColor','LineWidth','PolygonMode','PolygonOffset','Scissor','ActiveTexture','BindTexture','BindFramebuffer','UseProgram','BindVertexArray','BindBuffer','Viewport','ClearColor'}
+custom = {'GetUniformLocation','GetUniformfv','GetIntegerv','GetBooleanv','GetFloatv','IsEnabled','Enable','Disable','ColorMask','DepthMask','DepthFunc','DepthRange','BlendFuncSeparate','BlendFunc','BlendEquationSeparate','BlendEquation','BlendColor','LineWidth','PolygonMode','PolygonOffset','Scissor','ActiveTexture','BindTexture','BindFramebuffer','UseProgram','BindVertexArray','BindBuffer','Viewport','ClearColor'}
 head = '''#include <cstddef>
 #include <map>
 #include <array>
@@ -37,12 +37,18 @@ void sc(int a,int b,int c,int d){ints[GL_SCISSOR_BOX]={a,b,c,d};} void at(unsign
 void fb(unsigned target,unsigned x){if(target==GL_FRAMEBUFFER||target==GL_DRAW_FRAMEBUFFER)ints[GL_DRAW_FRAMEBUFFER_BINDING][0]=x;if(target==GL_FRAMEBUFFER||target==GL_READ_FRAMEBUFFER)ints[GL_READ_FRAMEBUFFER_BINDING][0]=x;}
 void up(unsigned x){ints[GL_CURRENT_PROGRAM][0]=x;} void va(unsigned x){ints[GL_VERTEX_ARRAY_BINDING][0]=x;} void bb(unsigned,unsigned x){ints[GL_ARRAY_BUFFER_BINDING][0]=x;}
 void vp(int a,int b,int c,int d){ints[GL_VIEWPORT]={a,b,c,d};} void cc(float a,float b,float c,float d){floats[GL_COLOR_CLEAR_VALUE]={a,b,c,d};}
-int uniform_location(unsigned program,const char *name){return program==123 && std::strcmp(name,"_DiffIntensity")==0 ? 7 : -1;}
+int uniform_location(unsigned program,const char *name){
+ if(program==123 && std::strcmp(name,"_DiffIntensity")==0) return 7;
+ if(program==456 && std::strcmp(name,"_CharaLightIntensity")==0) return 8;
+ return -1;
+}
+void get_uniform(unsigned, int, float *out){for(int i=0;i<16;++i)out[i]=float(i+1);}
 struct GL {
 '''
 head += ''.join('Any '+n+';\n' for n in names if n not in custom)
 head += '''
 decltype(&uniform_location) GetUniformLocation=uniform_location;
+decltype(&get_uniform) GetUniformfv=get_uniform;
 decltype(&gi) GetIntegerv=gi; decltype(&gb) GetBooleanv=gb; decltype(&gf) GetFloatv=gf;
 decltype(&is) IsEnabled=is; decltype(&en) Enable=en; decltype(&dis) Disable=dis;
 decltype(&cm) ColorMask=cm; decltype(&dm) DepthMask=dm; decltype(&df) DepthFunc=df; decltype(&dr) DepthRange=dr;
@@ -56,7 +62,7 @@ void *g_opengl_context=nullptr;
 head += '#include "'+str(root/'source/chams_gl.inl')+'"\n'
 head += r'''
 std::vector<std::string> captured_lines;
-namespace reshade::chams::capture { uintptr_t native_context(){ return 1; } }
+namespace reshade::chams::capture { uintptr_t native_context(){ return 1; } uintptr_t native_surface(){ return 2; } }
 namespace reshade::chams { settings g_settings; bool g_overlay_open=false; int g_budget_left=110; unsigned g_frame_id=1; void dump_line(const char *line){ captured_lines.emplace_back(line); } void ensure_loaded(){} }
 namespace reshade::log { void message(level,const char*,...){} }
 int main(int argc, char **argv) {
@@ -94,6 +100,12 @@ int main(int argc, char **argv) {
  p.view.plain=0;p.view_m[0]=p.view_m[5]=p.view_m[10]=1;p.view_m[12]=-2;
  p.loc_cam_pos=0;p.world[12]=5;assert(object_distance(p)==3);
  assert(std::strcmp(p.dist_source,"MATRIX_V")==0);
+ // A driver returning 16 floats for every array location must not overwrite
+ // the adjacent capture object; it may be an array of matrices, not vectors.
+ struct { float value[16]; int sentinel; } safe{{},12345}; matrix_loc arrayloc{};arrayloc.array_style=true;
+ for(int i=0;i<4;i++) arrayloc.loc[i]=i;
+ capture_read_matrix(77,arrayloc,safe.value); assert(safe.sentinel==12345);
+ assert(safe.value[0]==1 && safe.value[4]==1 && safe.value[15]==4);
  // Projected origin is viewport-relative and fails when matrix/clip w is missing.
  program_info projection{};projection.obj_to_world.plain=0;projection.view_proj.plain=0;
  projection.world[12]=.5f;projection.vp_m[0]=projection.vp_m[5]=projection.vp_m[15]=1;
@@ -152,17 +164,45 @@ int main(int argc, char **argv) {
  // Exercise actual integrated scope against the standalone asynchronous writer.
  assert(capture::runtime_start(argv[1]));
  g_opengl_context=reinterpret_cast<void *>(1);g_settings.enabled=true;g_overlay_open=false;g_budget_left=0;
+ ints[GL_CURRENT_PROGRAM][0]=123;
  { capture_gl_scope scope("mock_draw", GL_TRIANGLES, 200); draw_chams(GL_TRIANGLES,200,[&]{}, &scope); }
+ g_budget_left=110;g_settings.detect_mode=0;g_settings.render_mode=1;g_settings.glow=true;
+ g_settings.glow_alpha=.5f;g_settings.stroke=false;g_settings.wire=false;
+ { capture_gl_scope scope("reject_draw", GL_TRIANGLES, 200); draw_chams(GL_TRIANGLES,200,[&]{}, &scope); }
+ ints[GL_CURRENT_PROGRAM][0]=456;
+ { capture_gl_scope scope("accepted_draw", GL_TRIANGLES, 200); draw_chams(GL_TRIANGLES,200,[&]{}, &scope); }
  capture::runtime_stop(); auto status=capture::runtime_status();
+ assert(!status.io_error && !status.dropped && status.draws==3 && status.instrumentation_samples==3);
+ // Program metadata must be re-emitted when another session starts.
+ assert(capture::runtime_start(argv[1]));
+ g_budget_left=0;ints[GL_CURRENT_PROGRAM][0]=123;
+ { capture_gl_scope scope("mock_draw", GL_TRIANGLES, 200); draw_chams(GL_TRIANGLES,200,[&]{}, &scope); }
+ capture::runtime_stop(); status=capture::runtime_status();
  assert(!status.io_error && !status.dropped && status.draws==1);
+ const int iterations=4000; auto off_start=std::chrono::steady_clock::now();
+ for(int i=0;i<iterations;i++){ capture_gl_scope scope("benchmark", GL_TRIANGLES, 200); draw_chams(GL_TRIANGLES,200,[&]{}, &scope); }
+ const auto off_ns=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-off_start).count();
+ assert(capture::runtime_start(argv[1])); auto on_start=std::chrono::steady_clock::now();
+ for(int i=0;i<iterations;i++){ capture_gl_scope scope("benchmark", GL_TRIANGLES, 200); draw_chams(GL_TRIANGLES,200,[&]{}, &scope); }
+ const auto on_ns=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-on_start).count();
+ capture::runtime_stop(); status=capture::runtime_status();
+ assert(!status.io_error && !status.dropped && status.draws==iterations && status.instrumentation_samples==iterations);
+ std::printf("MOCK BENCHMARK: off %.1f ns/draw, on %.1f ns/draw (not driver or in-game FPS)\n", double(off_ns)/iterations,double(on_ns)/iterations);
 }
 '''
 with tempfile.TemporaryDirectory() as d:
  p=pathlib.Path(d)/'mock.cpp';p.write_text(head);exe=pathlib.Path(d)/'test'
- subprocess.run(['g++','-std=c++17','-O0',str(p),str(root/'source/chams_capture.cpp'),'-pthread','-o',str(exe)],check=True)
+ subprocess.run(['g++','-std=c++17','-O0','-Wformat=2','-Werror=format',str(p),str(root/'source/chams_capture.cpp'),'-pthread','-o',str(exe)],check=True)
  subprocess.run([str(exe),d],check=True)
- sessions=list(pathlib.Path(d).glob('session-*')); assert len(sessions)==1
- events=[json.loads(line) for f in sorted(sessions[0].glob('capture-*.jsonl')) for line in f.read_text().splitlines()]
- draws=[e for e in events if e['event']=='draw']; assert len(draws)==1
- assert draws[0]['api']=='mock_draw' and draws[0]['decision']=='budget' and draws[0]['count']==200
+ sessions=list(pathlib.Path(d).glob('session-*')); assert len(sessions)==3
+ observed=[]
+ for session in sessions:
+  events=[json.loads(line) for f in sorted(session.glob('capture-*.jsonl')) for line in f.read_text().splitlines()]
+  draws=[e for e in events if e['event']=='draw']
+  infos=[e for e in events if e['event']=='program_info']; assert infos
+  first=draws[0]; assert first['api'] in ('mock_draw','benchmark') and first['decision']=='budget' and first['count']==200
+  assert first['program_epoch']==infos[0]['epoch'] and first['program']==infos[0]['program']
+  if first['api']=='benchmark': assert len(draws)==4000
+  else: observed.append([x['decision'] for x in draws])
+ assert sorted(observed,key=len)==[['budget'],['budget','classifier_reject','direct']]
 print('PASS: GL state round trips; tracker interrupted sequences; Strict/Wide cache mode switch; full inline code compiled against mock GL')

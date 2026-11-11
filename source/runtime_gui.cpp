@@ -15,6 +15,7 @@
 #include "input.hpp"
 #include "imgui_widgets.hpp"
 #include "chams.hpp" // chams mod
+#include "chams_capture.hpp"
 #include "localization.hpp"
 #include "platform_utils.hpp"
 #include "fonts/forkawesome.inl"
@@ -824,7 +825,8 @@ void reshade::runtime::draw_gui()
 	const bool show_fps = _show_fps == 1 || (_show_overlay && _show_fps > 1);
 	const bool show_frametime = _show_frametime == 1 || (_show_overlay && _show_frametime > 1);
 	const bool show_preset_name = _show_preset_name == 1 || (_show_overlay && _show_preset_name > 1);
-	bool show_statistics_window = show_clock || show_fps || show_frametime || show_preset_name;
+	const bool capture_active = chams::capture::runtime_enabled();
+	bool show_statistics_window = show_clock || show_fps || show_frametime || show_preset_name || capture_active;
 #if RESHADE_ADDON
 	for (const addon_info &info : addon_loaded_info)
 	{
@@ -1287,6 +1289,14 @@ void reshade::runtime::draw_gui()
 			ImGui::TextUnformatted(preset_name.c_str(), preset_name.c_str() + preset_name.size());
 		}
 
+		if (capture_active)
+		{
+			const auto capture_status = chams::capture::runtime_status();
+			const bool bad = capture_status.io_error || capture_status.dropped != 0;
+			ImGui::TextColored(bad ? ImVec4(1, 0.25f, 0.2f, 1) : ImVec4(1, 0.8f, 0.2f, 1),
+				bad ? "CHAMS TRACKING: LOSS/ERROR" : "CHAMS TRACKING ACTIVE");
+			if (bad) ImGui::Text("Dropped: %llu", static_cast<unsigned long long>(capture_status.dropped));
+		}
 		ImGui::Dummy(ImVec2(200, 0)); // Force a minimum window width
 
 		ImGui::PopFont();

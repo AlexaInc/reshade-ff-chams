@@ -801,12 +801,16 @@ HGLRC            WINAPI wglCreateContextAttribsARB(HDC hdc, HGLRC hShareContext,
 	const HGLRC hglrc = reshade::hooks::call(wglCreateContextAttribsARB)(hdc, hShareContext, reinterpret_cast<const int *>(attribs));
 	if (hglrc == nullptr)
 	{
-		reshade::log::message(reshade::log::level::warning, "wglCreateContextAttribsARB failed with error code %lu.", GetLastError() & 0xFFFF);
+		const DWORD capture_last_error = GetLastError();
+		reshade::log::message(reshade::log::level::warning, "wglCreateContextAttribsARB failed with error code %lu.", capture_last_error & 0xFFFF);
+		reshade::chams::capture::runtime_event(0, "context_create_failed", "\"api\":\"wglCreateContextAttribsARB\"");
+		SetLastError(capture_last_error);
 		return nullptr;
 	}
 
 	reshade::chams::capture::invalidate_metadata();
 	reshade::chams::capture::runtime_created(reinterpret_cast<uintptr_t>(hglrc));
+	if (hShareContext != nullptr) reshade::chams::capture::runtime_shared(reinterpret_cast<uintptr_t>(hglrc), reinterpret_cast<uintptr_t>(hShareContext), true);
 	{ const std::unique_lock<std::shared_mutex> lock(s_global_mutex);
 
 		if (compatibility)
@@ -845,7 +849,10 @@ extern "C" HGLRC WINAPI wglCreateLayerContext(HDC hdc, int iLayerPlane)
 	const HGLRC hglrc = reshade::hooks::call(wglCreateLayerContext)(hdc, iLayerPlane);
 	if (hglrc == nullptr)
 	{
-		reshade::log::message(reshade::log::level::warning, "wglCreateLayerContext failed with error code %lu.", GetLastError() & 0xFFFF);
+		const DWORD capture_last_error = GetLastError();
+		reshade::log::message(reshade::log::level::warning, "wglCreateLayerContext failed with error code %lu.", capture_last_error & 0xFFFF);
+		reshade::chams::capture::runtime_event(0, "context_create_failed", "\"api\":\"wglCreateLayerContext\"");
+		SetLastError(capture_last_error);
 		return nullptr;
 	}
 
@@ -963,7 +970,10 @@ extern "C" BOOL  WINAPI wglDeleteContext(HGLRC hglrc)
 
 	if (!reshade::hooks::call(wglDeleteContext)(hglrc))
 	{
-		reshade::log::message(reshade::log::level::warning, "wglDeleteContext failed with error code %lu.", GetLastError() & 0xFFFF);
+		const DWORD capture_last_error = GetLastError();
+		reshade::log::message(reshade::log::level::warning, "wglDeleteContext failed with error code %lu.", capture_last_error & 0xFFFF);
+		reshade::chams::capture::runtime_event(reinterpret_cast<uintptr_t>(hglrc), "context_destroy_failed", "");
+		SetLastError(capture_last_error);
 		return FALSE;
 	}
 
@@ -978,10 +988,14 @@ extern "C" BOOL  WINAPI wglShareLists(HGLRC hglrc1, HGLRC hglrc2)
 
 	if (!reshade::hooks::call(wglShareLists)(hglrc1, hglrc2))
 	{
-		reshade::log::message(reshade::log::level::warning, "wglShareLists failed with error code %lu.", GetLastError() & 0xFFFF);
+		const DWORD capture_last_error = GetLastError();
+		reshade::log::message(reshade::log::level::warning, "wglShareLists failed with error code %lu.", capture_last_error & 0xFFFF);
+		reshade::chams::capture::runtime_shared(reinterpret_cast<uintptr_t>(hglrc1), reinterpret_cast<uintptr_t>(hglrc2), false);
+		SetLastError(capture_last_error);
 		return FALSE;
 	}
 
+	reshade::chams::capture::runtime_shared(reinterpret_cast<uintptr_t>(hglrc1), reinterpret_cast<uintptr_t>(hglrc2), true);
 	{ const std::unique_lock<std::shared_mutex> lock(s_global_mutex);
 
 		s_shared_contexts[hglrc2] = hglrc1;
@@ -1002,9 +1016,12 @@ extern "C" BOOL  WINAPI wglMakeCurrent(HDC hdc, HGLRC hglrc)
 	static const auto trampoline = reshade::hooks::call(wglMakeCurrent);
 	if (!trampoline(hdc, hglrc))
 	{
+		const DWORD capture_last_error = GetLastError();
 #if RESHADE_VERBOSE_LOG
-		reshade::log::message(reshade::log::level::warning, "wglMakeCurrent failed with error code %lu.", GetLastError() & 0xFFFF);
+		reshade::log::message(reshade::log::level::warning, "wglMakeCurrent failed with error code %lu.", capture_last_error & 0xFFFF);
 #endif
+		reshade::chams::capture::runtime_event(reinterpret_cast<uintptr_t>(prev_hglrc), "context_switch_failed", "");
+		SetLastError(capture_last_error);
 		return FALSE;
 	}
 
@@ -1307,7 +1324,7 @@ extern "C" BOOL  WINAPI wglSwapBuffers(HDC hdc)
 	}
 
 	const auto capture_context = reinterpret_cast<uintptr_t>(wglGetCurrentContext());
-	reshade::chams::capture::runtime_present_begin(capture_context);
+	reshade::chams::capture::runtime_present_begin(capture_context, reinterpret_cast<uintptr_t>(hdc));
 	reshade::chams::poll_hotkey();          // chams: in-game on/off key
 	reshade::chams::render_overlay();       // chams: composite the mask on top of the finished frame
 	reshade::chams::begin_frame();          // chams: reset the per-frame draw budget
@@ -1319,12 +1336,14 @@ extern "C" BOOL  WINAPI wglSwapBuffers(HDC hdc)
 	assert(!g_in_dxgi_runtime);
 	g_in_dxgi_runtime = true;
 	const BOOL result = trampoline(hdc);
+	const DWORD capture_last_error = GetLastError();
 	g_in_dxgi_runtime = false;
-	reshade::chams::capture::runtime_present(capture_context, result != FALSE);
+	reshade::chams::capture::runtime_present(capture_context, reinterpret_cast<uintptr_t>(hdc), result != FALSE);
 
 	if (result && swapchain != nullptr)
 		swapchain->on_finish_present();
 
+	if (!result) SetLastError(capture_last_error);
 	return result;
 }
 extern "C" BOOL  WINAPI wglSwapLayerBuffers(HDC hdc, UINT i)

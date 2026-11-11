@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Exercise the standalone recording core; no GL driver or Windows DLL is tested."""
 from pathlib import Path
-import json, subprocess, tempfile
+import json, subprocess, tempfile, importlib.util, shutil
 root = Path(__file__).resolve().parents[1]
+spec=importlib.util.spec_from_file_location('capture_verify',root/'tools/chams_capture_verify.py')
+verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(verifier)
 with tempfile.TemporaryDirectory() as tmp:
     temp = Path(tmp)
     exe = temp / 'capture-test'
@@ -33,6 +35,16 @@ with tempfile.TemporaryDirectory() as tmp:
         assert [x['round'] for x in frames]==[i for i in range(1000) for _ in range(2)]
     assert s['files'] > 1 and s['elapsed_ns'] > 0 and s['enqueue_ns'] > 0
     print('synthetic long:',s['draws'],'draw records,',s['files'],'parts,',round(s['elapsed_ns']/1e9,3),'s elapsed,',round(s['enqueue_ns']/s['attempted'],1),'ns mean producer enqueue time (includes lock wait)')
+    simulated=verifier.verify(temp/'simulated')
+    assert not simulated['problems'] and simulated['summary']['frames']==72000 and simulated['summary']['draws']==144000
+    print('PASS: 20 minutes of logical 60 Hz frames simulated (not wall-clock gameplay)')
+    surface_summary,surface_rows=load('surfaces'); assert surface_summary['complete']
+    assert not verifier.verify(temp/'surfaces')['problems']
+    surface_draws=[(e['surface'], e['frame'], e['value']) for e in surface_rows if e['event']=='draw']
+    assert surface_draws == [(1,1,11),(1,2,12),(2,1,21),(1,2,13)]
+    begin=next(e for e in surface_rows if e['event']=='draw_begin')
+    end=next(e for e in surface_rows if e['event']=='draw' and e.get('value')==13)
+    assert (begin['context'],begin['surface'],begin['frame'],begin['draw_id']) == (end['context'],end['surface'],end['frame'],end['draw_id'])
     sessions=list((temp/'runtime').glob('session-*')); assert len(sessions)==1
     runtime_rows=[json.loads(line) for f in sorted(sessions[0].glob('capture-*.jsonl')) for line in f.read_text().splitlines()]
     assert [x['event'] for x in runtime_rows].index('draw') < [x['event'] for x in runtime_rows].index('session_end')
@@ -42,6 +54,10 @@ with tempfile.TemporaryDirectory() as tmp:
     assert s['oversized'] >= 1 and s['queue_full'] > 0
     assert s['dropped'] == s['oversized']+s['queue_full']+s['io_dropped']+s['allocation_failed']
     assert s['attempted']==s['written']+s['dropped']
+    assert verifier.verify(temp/'overflow')['problems']
+    corrupt=temp/'corrupt'; shutil.copytree(temp/'surfaces',corrupt)
+    with next(corrupt.glob('capture-*.jsonl')).open('ab') as f: f.write(b'{broken')
+    assert verifier.verify(corrupt)['problems']
     assert all(a['seq']<b['seq'] for a,b in zip(rows,rows[1:]))
     print('PASS: capture core long-session, concurrency, context/frame correlation, rotation, overflow and record integrity')
     if (temp/'io-error').exists():

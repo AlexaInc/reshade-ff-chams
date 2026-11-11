@@ -4,6 +4,7 @@
  */
 
 #include "chams.hpp"
+#include "chams_capture.hpp"
 #include "ini_file.hpp"
 #include "dll_log.hpp"
 #include "chams_config_validation.hpp"
@@ -197,6 +198,13 @@ namespace reshade::chams
 			                      "[CHAMS] toggled by hotkey -> %s", g_settings.enabled ? "on" : "off");
 		}
 		was_down = down;
+		// Passive diagnostic marker, not an input hook: F9 is not consumed and
+		// only its press transition is recorded while a session is active.
+		static std::atomic<bool> marker_was_down{false};
+		const bool marker_down = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+		const bool marker_before = marker_was_down.exchange(marker_down);
+		if (marker_down && !marker_before && capture::runtime_enabled())
+			capture::runtime_marker(capture::native_context(), capture::native_surface(), "f9");
 	}
 
 	static void clamp_colour(float c[3])
