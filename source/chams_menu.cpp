@@ -17,6 +17,7 @@
 #include <Windows.h>
 #include <cstdlib>
 #include "chams.hpp"
+#include "chams_capture.hpp"
 #include <imgui.h>
 #include <fstream>
 #include <vector>
@@ -29,6 +30,35 @@ void reshade::runtime::draw_gui_chams()
 	chams::settings &s = chams::g_settings;
 
 	ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.55f);
+
+	// A diagnostic session is deliberately not a persisted Chams setting.
+	if (ImGui::CollapsingHeader("Runtime capture (experimental)", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		using namespace chams::capture;
+		static bool start_failed = false;
+		if (!runtime_enabled())
+		{
+			if (ImGui::Button("Start tracking##capture"))
+			{
+				std::error_code ec;
+				const auto temp = std::filesystem::temp_directory_path(ec);
+				start_failed = ec || !runtime_start(temp / "ReShade-Chams-Captures");
+			}
+		}
+		else if (ImGui::Button("Stop tracking##capture")) runtime_stop();
+		const auto capture_status = runtime_status();
+		ImGui::SameLine(); ImGui::TextUnformatted(capture_status.active ? "TRACKING ACTIVE" : "Tracking stopped");
+		ImGui::Text("Frames: %llu  Contexts: %llu  Draw records: %llu",
+			static_cast<unsigned long long>(capture_status.frames), static_cast<unsigned long long>(capture_status.contexts),
+			static_cast<unsigned long long>(capture_status.draws));
+		ImGui::Text("Dropped: %llu  Writer error: %s", static_cast<unsigned long long>(capture_status.dropped), capture_status.io_error ? "YES" : "no");
+		const auto capture_path = runtime_directory().u8string();
+		if (!capture_path.empty()) { ImGui::TextWrapped("Session: %s", capture_path.c_str());
+			if (ImGui::Button("Copy capture folder##capture")) ImGui::SetClipboardText(capture_path.c_str()); }
+		if (start_failed) ImGui::TextWrapped("Unable to start capture: check TEMP folder and disk permissions.");
+		ImGui::TextWrapped("Experimental capture: coverage and performance have not been verified. Stop flushes the writer.");
+	}
+	ImGui::Separator();
 
 	// ============================== master switch ==============================
 	if (ImGui::Checkbox("Master switch##chams", &s.enabled))

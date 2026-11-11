@@ -2,10 +2,14 @@
 #include <cstdio>
 #include <limits>
 #include <sstream>
+#include <memory>
+#include <shared_mutex>
 
 namespace reshade::chams::capture
 {
- namespace { std::atomic<uint64_t> next_thread_id{0}; }
+ namespace { std::atomic<uint64_t> next_thread_id{0}, metadata_epoch{1}; }
+ uint64_t metadata_generation() { return metadata_epoch.load(std::memory_order_acquire); }
+ void invalidate_metadata() { metadata_epoch.fetch_add(1, std::memory_order_acq_rel); }
  uint64_t recorder::now_ns() { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); }
  uint64_t recorder::thread_id() { static thread_local const uint64_t id = ++next_thread_id; return id; }
  recorder::~recorder() { stop(); }
@@ -60,6 +64,11 @@ namespace reshade::chams::capture
   }
   _ready.notify_one();
   _worker.join();
+ }
+ void recorder::external_drop()
+ {
+  std::lock_guard<std::mutex> lock(_mutex);
+  if (_enabled.load()) { ++_attempted; ++_next_seq; ++_dropped; ++_allocation_failed; }
  }
  std::filesystem::path recorder::directory() const { std::lock_guard<std::mutex> lock(_mutex); return _directory; }
  status recorder::snapshot() const
@@ -210,9 +219,21 @@ namespace reshade::chams::capture
  }
  void correlator::draw(uintptr_t native, const std::string &body)
  {
-  if (!native) return;
+  if (!native) { _recorder.emit("draw", 0, 0, body); return; }
   std::lock_guard<std::mutex> lock(_mutex);
   auto &c = ensure(native); begin(c); _recorder.emit("draw", c.id, c.frame, body);
+ }
+ void correlator::event(uintptr_t native, const char *kind, const std::string &body)
+ {
+  if (!native) { _recorder.emit(kind, 0, 0, body); return; }
+  std::lock_guard<std::mutex> lock(_mutex);
+  auto &c = ensure(native); begin(c); _recorder.emit(kind, c.id, c.frame, body);
+ }
+ void correlator::present_begin(uintptr_t native)
+ {
+  if (!native) return;
+  std::lock_guard<std::mutex> lock(_mutex);
+  auto &c = ensure(native); begin(c); _recorder.emit("present_begin", c.id, c.frame);
  }
  void correlator::present(uintptr_t native, bool succeeded)
  {
@@ -222,4 +243,97 @@ namespace reshade::chams::capture
   _recorder.emit("present", c.id, c.frame, succeeded ? "\"success\":true" : "\"success\":false");
   if (succeeded) { _recorder.emit("frame_end", c.id, c.frame, "\"reason\":\"present\""); ++c.frame; c.begun = false; }
  }
+ void correlator::finish()
+ {
+  std::lock_guard<std::mutex> lock(_mutex);
+  for (const auto &entry : _contexts) {
+   const auto &c = entry.second;
+   if (c.begun) _recorder.emit("frame_end", c.id, c.frame, "\"reason\":\"session_stop_incomplete\"");
+  }
+  _contexts.clear();
+ }
+
+ namespace {
+  struct runtime_controller {
+   std::mutex lifecycle;
+   std::shared_mutex gate;
+   std::mutex flight_mutex;
+   std::condition_variable flight_ready;
+   uint64_t inflight = 0;
+   std::atomic<bool> active{false};
+   recorder output;
+   std::unique_ptr<correlator> correlation;
+  };
+  // The host may unload from DllMain under the Windows loader lock; joining a
+  // worker there can deadlock. Explicit UI stop drains the process-lifetime
+  // controller. Abrupt termination can leave an incomplete final part.
+  runtime_controller &controller() { static auto *c = new runtime_controller; return *c; }
+ }
+ bool runtime_enabled() { return controller().active.load(std::memory_order_acquire); }
+ bool runtime_start(const std::filesystem::path &parent)
+ {
+  auto &c = controller(); std::lock_guard<std::mutex> life(c.lifecycle);
+  std::unique_lock<std::shared_mutex> lock(c.gate);
+  if (c.active.load()) return false;
+  std::error_code ec; std::filesystem::create_directories(parent, ec); if (ec) return false;
+  static std::atomic<uint64_t> counter{0};
+  const auto epoch = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  bool ok = false;
+  for (int i = 0; i < 16 && !ok; ++i) {
+   auto name = std::string("session-") + std::to_string(epoch) + "-" + std::to_string(++counter);
+   ok = c.output.start(parent / name, 32768, 64ull*1024*1024);
+  }
+  if (!ok) return false;
+  try { c.correlation = std::make_unique<correlator>(c.output); }
+  catch (...) { lock.unlock(); c.output.stop(); return false; }
+  c.active.store(true, std::memory_order_release); return true;
+ }
+ void runtime_stop()
+ {
+  auto &c = controller(); std::lock_guard<std::mutex> life(c.lifecycle);
+  { std::unique_lock<std::shared_mutex> lock(c.gate);
+   if (!c.active.exchange(false)) return;
+  }
+  { std::unique_lock<std::mutex> lock(c.flight_mutex);
+   c.flight_ready.wait(lock, [&] { return c.inflight == 0; });
+  }
+  { std::unique_lock<std::shared_mutex> lock(c.gate);
+   c.correlation->finish(); c.correlation.reset();
+  }
+  c.output.stop();
+ }
+ bool runtime_begin_draw()
+ {
+  auto &c = controller(); if (!c.active.load(std::memory_order_acquire)) return false;
+  std::shared_lock<std::shared_mutex> lock(c.gate);
+  if (!c.active.load(std::memory_order_relaxed)) return false;
+  std::lock_guard<std::mutex> flight(c.flight_mutex); ++c.inflight; return true;
+ }
+ void runtime_end_draw(uintptr_t n, const std::string *body) noexcept
+ {
+  auto &c = controller();
+  try {
+   std::shared_lock<std::shared_mutex> lock(c.gate);
+   if (!body || !c.correlation) c.output.external_drop();
+   else c.correlation->draw(n, *body);
+  } catch (...) { c.output.external_drop(); }
+  { std::lock_guard<std::mutex> lock(c.flight_mutex); if (c.inflight) --c.inflight; }
+  c.flight_ready.notify_all();
+ }
+ status runtime_status() { return controller().output.snapshot(); }
+ std::filesystem::path runtime_directory() { return controller().output.directory(); }
+ template <typename F> void runtime_event(F &&f)
+ {
+  auto &c = controller(); if (!c.active.load(std::memory_order_acquire)) return;
+  std::shared_lock<std::shared_mutex> lock(c.gate);
+  if (c.active.load(std::memory_order_relaxed) && c.correlation) f(*c.correlation);
+ }
+ void runtime_created(uintptr_t n) { runtime_event([&](correlator &c){ c.created(n); }); }
+ void runtime_destroyed(uintptr_t n) { runtime_event([&](correlator &c){ c.destroyed(n); }); }
+ void runtime_switched(uintptr_t n) { runtime_event([&](correlator &c){ c.switched(n); }); }
+ void runtime_draw(uintptr_t n, const std::string &body) { runtime_event([&](correlator &c){ c.draw(n, body); }); }
+ void runtime_event(uintptr_t n, const char *kind, const std::string &body) { runtime_event([&](correlator &c){ c.event(n, kind, body); }); }
+ void runtime_present_begin(uintptr_t n) { runtime_event([&](correlator &c){ c.present_begin(n); }); }
+ void runtime_present(uintptr_t n, bool ok) { runtime_event([&](correlator &c){ c.present(n, ok); }); }
+
 }

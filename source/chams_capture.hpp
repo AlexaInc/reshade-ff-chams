@@ -1,8 +1,6 @@
 #pragma once
 
-// Runtime capture infrastructure, independent of OpenGL and the legacy dump.
-// This is deliberately not wired into the renderer until the GL lifecycle and
-// all intended draw entry points can be instrumented and validated together.
+// Runtime capture infrastructure independent of the legacy text dump.
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -47,6 +45,7 @@ namespace reshade::chams::capture
   bool emit(const char *kind, uint64_t context, uint64_t frame,
             const std::string &object_body = {});
   std::filesystem::path directory() const;
+  void external_drop();
 
  private:
   struct line { std::string value; };
@@ -85,7 +84,10 @@ namespace reshade::chams::capture
   void destroyed(uintptr_t native_context);
   void switched(uintptr_t native_context);
   void draw(uintptr_t native_context, const std::string &body);
+  void event(uintptr_t native_context, const char *kind, const std::string &body);
+  void present_begin(uintptr_t native_context);
   void present(uintptr_t native_context, bool succeeded);
+  void finish();
  private:
   struct context { uint64_t id = 0, frame = 1; bool begun = false; };
   context &ensure(uintptr_t native_context);
@@ -95,4 +97,24 @@ namespace reshade::chams::capture
   std::unordered_map<uintptr_t, context> _contexts;
   uint64_t _next_context = 0;
  };
+ // Integration control. Event functions are safe to call concurrently with stop.
+ // Native handles are mapped to session-local IDs and never serialized.
+ uintptr_t native_context(); // provided by the GL integration
+ uint64_t metadata_generation();
+ void invalidate_metadata();
+ bool runtime_start(const std::filesystem::path &parent);
+ void runtime_stop();
+ bool runtime_enabled();
+ bool runtime_begin_draw();
+ void runtime_end_draw(uintptr_t native_context, const std::string *body) noexcept;
+ status runtime_status();
+ std::filesystem::path runtime_directory();
+ void runtime_created(uintptr_t native_context);
+ void runtime_destroyed(uintptr_t native_context);
+ void runtime_switched(uintptr_t native_context);
+ void runtime_draw(uintptr_t native_context, const std::string &body);
+ void runtime_event(uintptr_t native_context, const char *kind, const std::string &body);
+ void runtime_present_begin(uintptr_t native_context);
+ void runtime_present(uintptr_t native_context, bool succeeded);
+
 }

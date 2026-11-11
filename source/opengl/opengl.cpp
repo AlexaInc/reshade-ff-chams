@@ -16,6 +16,8 @@
 // Initialize thread local variable in this translation unit, to avoid the compiler generating calls to '__dyn_tls_on_demand_init' on every use in the frequently called functions below
 thread_local reshade::opengl::device_context_impl *g_opengl_context = nullptr;
 
+#include "chams_capture.hpp"
+namespace reshade::chams::capture { uintptr_t native_context() { return reinterpret_cast<uintptr_t>(wglGetCurrentContext()); } }
 #include "chams_gl.inl" // chams mod: extra draw passes (needs g_opengl_context and gl)
 
 #if RESHADE_ADDON
@@ -1345,6 +1347,7 @@ extern "C" void APIENTRY glPolygonOffset(GLfloat factor, GLfloat units)
 
 extern "C" void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glDrawArrays", mode, count);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
@@ -1356,10 +1359,11 @@ extern "C" void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count)
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glDrawArrays);
-	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, first, count); });
+	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, first, count); }, &chams_capture_scope);
 }
 extern "C" void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glDrawElements", mode, count);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
@@ -1375,7 +1379,7 @@ extern "C" void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type,
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glDrawElements);
-	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, count, type, indices); });
+	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, count, type, indices); }, &chams_capture_scope);
 }
 #endif
 
@@ -1426,6 +1430,7 @@ void APIENTRY glCopyTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLi
 
 void APIENTRY glDrawRangeElements(GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const GLvoid *indices)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glDrawRangeElements", mode, count);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
@@ -1613,6 +1618,7 @@ void APIENTRY glBlendEquation(GLenum mode)
 
 void APIENTRY glMultiDrawArrays(GLenum mode, const GLint *first, const GLsizei *count, GLsizei drawcount)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glMultiDrawArrays", mode, -1);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
@@ -1629,6 +1635,7 @@ void APIENTRY glMultiDrawArrays(GLenum mode, const GLint *first, const GLsizei *
 }
 void APIENTRY glMultiDrawElements(GLenum mode, const GLsizei *count, GLenum type, const GLvoid *const *indices, GLsizei drawcount)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glMultiDrawElements", mode, -1);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
@@ -1768,6 +1775,7 @@ void APIENTRY glBindBuffer(GLenum target, GLuint buffer)
 #ifdef GL_VERSION_2_0
 void APIENTRY glDeleteProgram(GLuint program)
 {
+	reshade::chams::capture::invalidate_metadata();
 #if RESHADE_ADDON
 	if (g_opengl_context && program != 0)
 	{
@@ -1790,6 +1798,7 @@ void APIENTRY glDeleteProgram(GLuint program)
 
 void APIENTRY glLinkProgram(GLuint program)
 {
+	reshade::chams::capture::invalidate_metadata();
 	static const auto trampoline = reshade::hooks::call(glLinkProgram);
 	trampoline(program);
 
@@ -3090,6 +3099,7 @@ void APIENTRY glCopyBufferSubData(GLenum readTarget, GLenum writeTarget, GLintpt
 
 void APIENTRY glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei primcount)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glDrawArraysInstanced", mode, count);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
@@ -3101,10 +3111,11 @@ void APIENTRY glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLs
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glDrawArraysInstanced);
-	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, first, count, primcount); });
+	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, first, count, primcount); }, &chams_capture_scope);
 }
 void APIENTRY glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices, GLsizei primcount)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glDrawElementsInstanced", mode, count);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
@@ -3120,7 +3131,7 @@ void APIENTRY glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, c
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glDrawElementsInstanced);
-	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, count, type, indices, primcount); });
+	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, count, type, indices, primcount); }, &chams_capture_scope);
 }
 #endif
 
@@ -3181,6 +3192,7 @@ void APIENTRY glTexImage3DMultisample(GLenum target, GLsizei samples, GLenum int
 
 void APIENTRY glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices, GLint basevertex)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glDrawElementsBaseVertex", mode, count);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
@@ -3196,10 +3208,11 @@ void APIENTRY glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, 
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glDrawElementsBaseVertex);
-	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, count, type, indices, basevertex); });
+	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, count, type, indices, basevertex); }, &chams_capture_scope);
 }
 void APIENTRY glDrawRangeElementsBaseVertex(GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const GLvoid *indices, GLint basevertex)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glDrawRangeElementsBaseVertex", mode, count);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
@@ -3219,6 +3232,7 @@ void APIENTRY glDrawRangeElementsBaseVertex(GLenum mode, GLuint start, GLuint en
 }
 void APIENTRY glDrawElementsInstancedBaseVertex(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices, GLsizei primcount, GLint basevertex)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glDrawElementsInstancedBaseVertex", mode, count);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
@@ -3234,10 +3248,11 @@ void APIENTRY glDrawElementsInstancedBaseVertex(GLenum mode, GLsizei count, GLen
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glDrawElementsInstancedBaseVertex);
-	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, count, type, indices, primcount, basevertex); });
+	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, count, type, indices, primcount, basevertex); }, &chams_capture_scope);
 }
 void APIENTRY glMultiDrawElementsBaseVertex(GLenum mode, const GLsizei *count, GLenum type, const GLvoid *const *indices, GLsizei drawcount, const GLint *basevertex)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glMultiDrawElementsBaseVertex", mode, -1);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
@@ -3280,6 +3295,7 @@ struct DrawElementsIndirectCommand
 
 void APIENTRY glDrawArraysIndirect(GLenum mode, const GLvoid *indirect)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glDrawArraysIndirect", mode, -1);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
@@ -3313,6 +3329,7 @@ void APIENTRY glDrawArraysIndirect(GLenum mode, const GLvoid *indirect)
 }
 void APIENTRY glDrawElementsIndirect(GLenum mode, GLenum type, const GLvoid *indirect)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glDrawElementsIndirect", mode, -1);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
@@ -3600,6 +3617,7 @@ void APIENTRY glBindImageTexture(GLuint unit, GLuint texture, GLint level, GLboo
 
 void APIENTRY glDrawArraysInstancedBaseInstance(GLenum mode, GLint first, GLsizei count, GLsizei primcount, GLuint baseinstance)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glDrawArraysInstancedBaseInstance", mode, count);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
@@ -3615,6 +3633,7 @@ void APIENTRY glDrawArraysInstancedBaseInstance(GLenum mode, GLint first, GLsize
 }
 void APIENTRY glDrawElementsInstancedBaseInstance(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices, GLsizei primcount, GLuint baseinstance)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glDrawElementsInstancedBaseInstance", mode, count);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
@@ -3634,6 +3653,7 @@ void APIENTRY glDrawElementsInstancedBaseInstance(GLenum mode, GLsizei count, GL
 }
 void APIENTRY glDrawElementsInstancedBaseVertexBaseInstance(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices, GLsizei primcount, GLint basevertex, GLuint baseinstance)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glDrawElementsInstancedBaseVertexBaseInstance", mode, count);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
@@ -3796,6 +3816,7 @@ void APIENTRY glDispatchComputeIndirect(GLintptr indirect)
 
 void APIENTRY glMultiDrawArraysIndirect(GLenum mode, const void *indirect, GLsizei drawcount, GLsizei stride)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glMultiDrawArraysIndirect", mode, -1);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
@@ -3832,6 +3853,7 @@ void APIENTRY glMultiDrawArraysIndirect(GLenum mode, const void *indirect, GLsiz
 }
 void APIENTRY glMultiDrawElementsIndirect(GLenum mode, GLenum type, const void *indirect, GLsizei drawcount, GLsizei stride)
 {
+	reshade::chams::capture_gl_scope chams_capture_scope("glMultiDrawElementsIndirect", mode, -1);
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{

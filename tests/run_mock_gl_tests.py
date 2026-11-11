@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Compile the actual inline GL code against a small stateful mock (not a driver test)."""
-import pathlib, re, subprocess, tempfile
+import pathlib, re, subprocess, tempfile, json
 root = pathlib.Path(__file__).resolve().parents[1]
 s = (root/'source/chams_gl.inl').read_text() + (root/'source/chams_overlay.inl').read_text()
 tokens = sorted(set(re.findall(r'\bGL_[A-Z0-9_]+\b', s)) - {'GL_TRUE','GL_FALSE'})
@@ -56,9 +56,11 @@ void *g_opengl_context=nullptr;
 head += '#include "'+str(root/'source/chams_gl.inl')+'"\n'
 head += r'''
 std::vector<std::string> captured_lines;
+namespace reshade::chams::capture { uintptr_t native_context(){ return 1; } }
 namespace reshade::chams { settings g_settings; bool g_overlay_open=false; int g_budget_left=110; unsigned g_frame_id=1; void dump_line(const char *line){ captured_lines.emplace_back(line); } void ensure_loaded(){} }
 namespace reshade::log { void message(level,const char*,...){} }
-int main() {
+int main(int argc, char **argv) {
+ assert(argc==2);
  using namespace reshade::chams;
  en(GL_DEPTH_TEST); en(GL_SCISSOR_TEST); en(GL_CULL_FACE); dm(1); cm(1,0,1,0); df(GL_GREATER); dr(.2f,.8f);
  bfs(5,6,7,8); bes(9,10); bc(.1f,.2f,.3f,.4f); lw(3); pm(0,GL_FILL); po(2,3); sc(2,3,4,5);
@@ -147,10 +149,20 @@ int main() {
  assert(ov().has_mask);g_overlay_open=false;
  draw_chams(GL_TRIANGLES,200,[&]{});
  assert(!ov().has_mask && ov().captured_frame==0xFFFFFFFFu);
+ // Exercise actual integrated scope against the standalone asynchronous writer.
+ assert(capture::runtime_start(argv[1]));
+ g_opengl_context=reinterpret_cast<void *>(1);g_settings.enabled=true;g_overlay_open=false;g_budget_left=0;
+ { capture_gl_scope scope("mock_draw", GL_TRIANGLES, 200); draw_chams(GL_TRIANGLES,200,[&]{}, &scope); }
+ capture::runtime_stop(); auto status=capture::runtime_status();
+ assert(!status.io_error && !status.dropped && status.draws==1);
 }
 '''
 with tempfile.TemporaryDirectory() as d:
  p=pathlib.Path(d)/'mock.cpp';p.write_text(head);exe=pathlib.Path(d)/'test'
- subprocess.run(['g++','-std=c++17','-O0',str(p),'-o',str(exe)],check=True)
- subprocess.run([str(exe)],check=True)
+ subprocess.run(['g++','-std=c++17','-O0',str(p),str(root/'source/chams_capture.cpp'),'-pthread','-o',str(exe)],check=True)
+ subprocess.run([str(exe),d],check=True)
+ sessions=list(pathlib.Path(d).glob('session-*')); assert len(sessions)==1
+ events=[json.loads(line) for f in sorted(sessions[0].glob('capture-*.jsonl')) for line in f.read_text().splitlines()]
+ draws=[e for e in events if e['event']=='draw']; assert len(draws)==1
+ assert draws[0]['api']=='mock_draw' and draws[0]['decision']=='budget' and draws[0]['count']==200
 print('PASS: GL state round trips; tracker interrupted sequences; Strict/Wide cache mode switch; full inline code compiled against mock GL')

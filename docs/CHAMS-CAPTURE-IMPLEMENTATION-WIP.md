@@ -1,6 +1,6 @@
 # Runtime capture implementation — foundation only (not a tracking build)
 
-Status: **not wired into ReShade**. Do not ask players to capture rounds with this code; the present DLL will not create these files. The previous local own-tracker experiment is intentionally not included in this branch, so this work does not add player or wall exclusion rules.
+Status: **partially integrated, not ready for training capture**. UI, WGL events and 18 draw entry points are now instrumented. Coverage, render-thread overhead, draw/present ordering across surfaces, lifetime, failure paths and Windows DLL integration still require validation. The previous local own-tracker experiment is not included, and no player or wall exclusion rules are added.
 
 ## Implemented standalone foundation
 

@@ -1,5 +1,6 @@
 #include "../source/chams_capture.hpp"
 #include <cassert>
+#include <atomic>
 #include <filesystem>
 #include <string>
 #include <thread>
@@ -49,6 +50,18 @@ int main(int argc, char **argv)
  for (int i = 0; i < 100000; ++i) r.emit("draw", 1, 1, "\"value\":1");
  r.stop(); s = r.snapshot();
  assert(s.dropped > 0 && !s.io_error && s.attempted == s.written + s.dropped);
+ // A draw that entered before Stop must be recorded before session_end.
+ assert(runtime_start(root / "runtime"));
+ assert(runtime_begin_draw());
+ std::atomic<bool> stopped{false};
+ std::thread stopping([&]{ runtime_stop(); stopped = true; });
+ while (runtime_enabled()) std::this_thread::yield();
+ assert(!stopped.load());
+ const std::string body = "\"test\":123";
+ runtime_end_draw(100, &body);
+ stopping.join();
+ auto integrated = runtime_status();
+ assert(!integrated.io_error && !integrated.dropped && integrated.draws == 1 && stopped.load());
 #ifndef _WIN32
  // Force the second part to a device that rejects writes; a failed capture
  // must be reported instead of claiming successful, complete output.

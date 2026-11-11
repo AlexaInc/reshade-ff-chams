@@ -9,6 +9,7 @@
 #include "opengl_impl_type_convert.hpp"
 #include "opengl_hooks.hpp"
 #include "chams.hpp" // chams mod
+#include "chams_capture.hpp"
 #include "dll_log.hpp"
 #include "hook_manager.hpp"
 #include "addon_manager.hpp"
@@ -804,6 +805,8 @@ HGLRC            WINAPI wglCreateContextAttribsARB(HDC hdc, HGLRC hShareContext,
 		return nullptr;
 	}
 
+	reshade::chams::capture::invalidate_metadata();
+	reshade::chams::capture::runtime_created(reinterpret_cast<uintptr_t>(hglrc));
 	{ const std::unique_lock<std::shared_mutex> lock(s_global_mutex);
 
 		if (compatibility)
@@ -850,6 +853,8 @@ extern "C" HGLRC WINAPI wglCreateLayerContext(HDC hdc, int iLayerPlane)
 
 		s_shared_contexts[hglrc] = nullptr;
 	}
+	reshade::chams::capture::invalidate_metadata();
+	reshade::chams::capture::runtime_created(reinterpret_cast<uintptr_t>(hglrc));
 
 	return hglrc;
 }
@@ -962,6 +967,8 @@ extern "C" BOOL  WINAPI wglDeleteContext(HGLRC hglrc)
 		return FALSE;
 	}
 
+	reshade::chams::capture::invalidate_metadata();
+	reshade::chams::capture::runtime_destroyed(reinterpret_cast<uintptr_t>(hglrc));
 	return TRUE;
 }
 
@@ -1001,6 +1008,7 @@ extern "C" BOOL  WINAPI wglMakeCurrent(HDC hdc, HGLRC hglrc)
 		return FALSE;
 	}
 
+	reshade::chams::capture::runtime_switched(reinterpret_cast<uintptr_t>(hglrc));
 	if (hglrc == prev_hglrc)
 	{
 		// Nothing has changed, so there is nothing more to do
@@ -1298,6 +1306,8 @@ extern "C" BOOL  WINAPI wglSwapBuffers(HDC hdc)
 			swapchain = *swapchain_it;
 	}
 
+	const auto capture_context = reinterpret_cast<uintptr_t>(wglGetCurrentContext());
+	reshade::chams::capture::runtime_present_begin(capture_context);
 	reshade::chams::poll_hotkey();          // chams: in-game on/off key
 	reshade::chams::render_overlay();       // chams: composite the mask on top of the finished frame
 	reshade::chams::begin_frame();          // chams: reset the per-frame draw budget
@@ -1310,6 +1320,7 @@ extern "C" BOOL  WINAPI wglSwapBuffers(HDC hdc)
 	g_in_dxgi_runtime = true;
 	const BOOL result = trampoline(hdc);
 	g_in_dxgi_runtime = false;
+	reshade::chams::capture::runtime_present(capture_context, result != FALSE);
 
 	if (result && swapchain != nullptr)
 		swapchain->on_finish_present();

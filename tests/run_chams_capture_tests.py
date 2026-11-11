@@ -7,7 +7,7 @@ with tempfile.TemporaryDirectory() as tmp:
     temp = Path(tmp)
     exe = temp / 'capture-test'
     subprocess.run(['g++','-std=c++17','-O2','-pthread',str(root/'tests/chams_capture_core_test.cpp'), str(root/'source/chams_capture.cpp'),'-o',str(exe)], check=True)
-    subprocess.run([str(exe),str(temp)],check=True)
+    subprocess.run([str(exe),str(temp)],check=True,timeout=90)
     def load(name):
         path=temp/name
         summary=json.loads((path/'summary.json').read_text())
@@ -33,6 +33,10 @@ with tempfile.TemporaryDirectory() as tmp:
         assert [x['round'] for x in frames]==[i for i in range(1000) for _ in range(2)]
     assert s['files'] > 1 and s['elapsed_ns'] > 0 and s['enqueue_ns'] > 0
     print('synthetic long:',s['draws'],'draw records,',s['files'],'parts,',round(s['elapsed_ns']/1e9,3),'s elapsed,',round(s['enqueue_ns']/s['attempted'],1),'ns mean producer enqueue time (includes lock wait)')
+    sessions=list((temp/'runtime').glob('session-*')); assert len(sessions)==1
+    runtime_rows=[json.loads(line) for f in sorted(sessions[0].glob('capture-*.jsonl')) for line in f.read_text().splitlines()]
+    assert [x['event'] for x in runtime_rows].index('draw') < [x['event'] for x in runtime_rows].index('session_end')
+    assert any(x['event']=='frame_end' and x['reason']=='session_stop_incomplete' for x in runtime_rows)
     s,rows=load('overflow')
     assert not s['complete'] and s['dropped'] > 0 and s['written']==len(rows)
     assert s['oversized'] >= 1 and s['queue_full'] > 0

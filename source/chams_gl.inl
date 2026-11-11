@@ -75,6 +75,7 @@
 
 #include "chams.hpp"
 #include "chams_trace.hpp"
+#include "chams_capture.hpp"
 
 #include "dll_log.hpp"
 
@@ -164,6 +165,8 @@ namespace reshade::chams
 	inline void update_own_estimate()
 	{
 		own_track &o = own();
+		const bool tracking = capture::runtime_enabled();
+		const own_track before = tracking ? o : own_track{};
 		if (o.frame_min < 1e8f)
 		{
 			// Only learn from plausible third-person distances (1.5m - 5m).
@@ -203,6 +206,19 @@ namespace reshade::chams
 			o.cand    = -1.0f;
 			o.stable  = 0;
 			o.own_est = -1.0f;
+		}
+		if (tracking) {
+			const char *reason = before.frame_min >= 1e8f ? "no_observation" :
+				(before.frame_min < 1.5f || before.frame_min > 5.0f) ? "out_of_range" :
+				(before.cand < 0 || std::fabs(before.frame_min - before.cand) > 0.3f) ? "candidate_changed" :
+				(before.stable < 30 && o.stable >= 30) ? "acquired" : "candidate_continued";
+			try { char line[512]; std::snprintf(line, sizeof(line),
+				"\"reason\":\"%s\",\"legacy_global_frame\":%u,\"frame_min\":%.6g,\"before_candidate\":%.6g,\"before_estimate\":%.6g,\"before_stable\":%d,\"candidate\":%.6g,\"estimate\":%.6g,\"stable\":%d",
+				reason, g_frame_id, std::isfinite(before.frame_min) ? before.frame_min : -1,
+				std::isfinite(before.cand) ? before.cand : -1, std::isfinite(before.own_est) ? before.own_est : -1, before.stable,
+				std::isfinite(o.cand) ? o.cand : -1, std::isfinite(o.own_est) ? o.own_est : -1, o.stable);
+				capture::runtime_event(capture::native_context(), "own_tracker", line);
+			} catch (...) { /* diagnostic must not terminate the renderer */ }
 		}
 		o.frame_min = 1e9f;
 	}
@@ -1108,9 +1124,106 @@ namespace reshade::chams
 		was_open = is_open;
 	}
 
+	struct capture_program_metadata
+	{
+		uintptr_t context = 0; GLint program = 0; int tokens = 0, skin = 0, wall = 0;
+		matrix_loc object, view, projection; GLint camera = -1;
+	};
+	inline const capture_program_metadata &capture_program(uintptr_t context, GLint program)
+	{
+		struct cache_type { uint64_t epoch = 0; unsigned used = 0; capture_program_metadata entries[128]; };
+		static thread_local cache_type cache;
+		const uint64_t epoch = capture::metadata_generation();
+		if (cache.epoch != epoch) { cache.epoch = epoch; cache.used = 0; }
+		for (unsigned i = 0; i < std::min(cache.used, 128u); ++i)
+			if (cache.entries[i].context == context && cache.entries[i].program == program) return cache.entries[i];
+		auto &p = cache.entries[cache.used++ % 128]; p = capture_program_metadata{};
+		p.context = context; p.program = program;
+		for (size_t i = 0; i < sizeof(k_chara_tokens)/sizeof(k_chara_tokens[0]); ++i)
+			if (gl.GetUniformLocation(program, k_chara_tokens[i]) != -1) p.tokens |= (1 << i);
+		for (size_t i = 0; i < sizeof(k_skin_uniforms)/sizeof(k_skin_uniforms[0]); ++i)
+			if (gl.GetUniformLocation(program, k_skin_uniforms[i]) != -1) p.skin |= (1 << i);
+		if (gl.GetUniformLocation(program, "_FakeDepth_Ground") != -1) p.wall |= 1;
+		if (gl.GetUniformLocation(program, "_IceColorBackground") != -1) p.wall |= 2;
+		if (gl.GetUniformLocation(program, "_DepthTexMask") != -1) p.wall |= 4;
+		static const char *const objects[] = {"hlslcc_mtx4x4unity_ObjectToWorld", "unity_ObjectToWorld", "_ObjectToWorld", "unity_ObjectToWorldArray"};
+		static const char *const views[] = {"hlslcc_mtx4x4unity_MatrixV", "UNITY_MATRIX_V", "unity_MatrixV"};
+		static const char *const projections[] = {"hlslcc_mtx4x4unity_MatrixVP", "UNITY_MATRIX_VP", "unity_MatrixVP"};
+		p.object = resolve_matrix(program, objects, 4); p.view = resolve_matrix(program, views, 3);
+		p.projection = resolve_matrix(program, projections, 3); p.camera = gl.GetUniformLocation(program, "_WorldSpaceCameraPos");
+		return p;
+	}
+
+	// Snapshot original game draw state; the guard records even early exits.
+	// Numeric IDs are GL names, not game object identities. No game memory,
+	// shader source, texture contents or host file paths are recorded here.
+	struct capture_gl_scope
+	{
+		bool active = false; uintptr_t context = 0;
+		const char *api = "unknown", *decision = "not_evaluated";
+		GLint mode = 0, count = 0, program = 0, array = 0, element = 0, vao = 0, framebuffer = 0;
+		GLint viewport[4] = {}, depth_func = 0, blend_src = 0, blend_dst = 0;
+		int depth_test = 0, depth_write = 0, blend = 0, uniform_bits = 0, skin_bits = 0, wall_bits = 0, wall_hint = -1, matrix_bits = 0;
+		int detect = 0, renderer = 0, hide = 0, budget = 0, stable = 0, has_info = 0;
+		float estimate = -1, distance = -1, world[16] = {}, view[16] = {}, vp[16] = {}, camera[3] = {};
+		const char *dist_source = "unknown";
+		capture_gl_scope(const char *name, GLenum prim, GLsizei n) : api(name), mode(prim), count(n)
+		{
+			if (!capture::runtime_begin_draw()) return;
+			active = true; context = capture::native_context();
+			detect = g_settings.detect_mode; renderer = g_settings.render_mode; hide = g_settings.hide_own; budget = g_budget_left;
+			if (!g_opengl_context || !gl.GetIntegerv) return;
+			gl.GetIntegerv(GL_CURRENT_PROGRAM, &program);
+			gl.GetIntegerv(GL_ARRAY_BUFFER_BINDING, &array); gl.GetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &element);
+			gl.GetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao); gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &framebuffer);
+			gl.GetIntegerv(GL_VIEWPORT, viewport); gl.GetIntegerv(GL_DEPTH_FUNC, &depth_func);
+			gl.GetIntegerv(GL_BLEND_SRC_RGB, &blend_src); gl.GetIntegerv(GL_BLEND_DST_RGB, &blend_dst);
+			if (gl.IsEnabled) { depth_test = gl.IsEnabled(GL_DEPTH_TEST); blend = gl.IsEnabled(GL_BLEND); }
+			if (gl.GetBooleanv) { GLboolean b = GL_FALSE; gl.GetBooleanv(GL_DEPTH_WRITEMASK, &b); depth_write = b; }
+			if (program && gl.GetUniformLocation) {
+				const auto &m = capture_program(context, program);
+				uniform_bits = m.tokens; skin_bits = m.skin; wall_bits = m.wall;
+				program_info p{}; p.program = program; p.obj_to_world = m.object; p.view = m.view; p.view_proj = m.projection;
+				matrix_bits = (m.object.valid() ? 1 : 0) | (m.view.valid() ? 2 : 0) | (m.projection.valid() ? 4 : 0) | (m.camera != -1 ? 8 : 0);
+				if (gl.GetUniformfv && matrix_bits) {
+					read_matrix(program, m.object, p.world); read_matrix(program, m.view, p.view_m); read_matrix(program, m.projection, p.vp_m);
+					if (m.camera != -1) { GLfloat tmp[16] = {}; gl.GetUniformfv(program, m.camera, tmp); std::memcpy(p.cam_uniform, tmp, sizeof(p.cam_uniform)); p.loc_cam_pos = m.camera; }
+					state(p, object_distance(p));
+				}
+			}
+		}
+		void state(const program_info &p, float d)
+		{
+			if (!active) return;
+			has_info = 1; distance = std::isfinite(d) ? d : -1; dist_source = p.dist_source;
+			std::memcpy(world, p.world, sizeof(world)); std::memcpy(view, p.view_m, sizeof(view));
+			std::memcpy(vp, p.vp_m, sizeof(vp)); std::memcpy(camera, p.cam_uniform, sizeof(camera));
+			estimate = std::isfinite(own().own_est) ? own().own_est : -1; stable = own().stable;
+		}
+		~capture_gl_scope()
+		{
+			if (!active) return;
+			try {
+				char b[4096]; int n = std::snprintf(b, sizeof(b),
+					"\"api\":\"%s\",\"mode\":%d,\"count\":%d,\"program\":%d,\"array_buffer\":%d,\"element_buffer\":%d,\"vao\":%d,\"framebuffer\":%d,\"viewport\":[%d,%d,%d,%d],\"depth_test\":%d,\"depth_write\":%d,\"depth_func\":%d,\"blend\":%d,\"blend_src\":%d,\"blend_dst\":%d,\"token_bits\":%d,\"skin_bits\":%d,\"wall_bits\":%d,\"wall_hint\":%d,\"matrix_bits\":%d,\"detect\":%d,\"renderer\":%d,\"hide_own\":%d,\"budget\":%d,\"decision\":\"%s\",\"has_info\":%d,\"distance\":%.6g,\"distance_source\":\"%s\",\"own_est\":%.6g,\"stable\":%d",
+					api, mode, count, program, array, element, vao, framebuffer, viewport[0], viewport[1], viewport[2], viewport[3],
+					depth_test, depth_write, depth_func, blend, blend_src, blend_dst, uniform_bits, skin_bits, wall_bits, wall_hint, matrix_bits, detect, renderer, hide, budget, decision, has_info, distance, dist_source, estimate, stable);
+				if (n < 0 || static_cast<size_t>(n) >= sizeof(b)) { capture::runtime_end_draw(context, nullptr); return; }
+				std::string body(b, static_cast<size_t>(n));
+				auto append = [&](const char *key, const float *v, int size) {
+					body += ",\""; body += key; body += "\":[";
+					for (int i = 0; i < size; ++i) { if (i) body += ","; if (!std::isfinite(v[i])) body += "null";
+						else { char t[48]; std::snprintf(t, sizeof(t), "%.9g", v[i]); body += t; } } body += "]";
+				};
+				if (has_info) { append("world", world, 16); append("view", view, 16); append("view_projection", vp, 16); append("camera_uniform", camera, 3); }
+				capture::runtime_end_draw(context, &body);
+			} catch (...) { capture::runtime_end_draw(context, nullptr); }
+		}
+	};
+
 	// --------------------------------------------------------------- wrapper
 	template <typename F>
-	inline void draw_chams(GLenum mode, GLsizei count, F &&real_draw)
+	inline void draw_chams(GLenum mode, GLsizei count, F &&real_draw, capture_gl_scope *cap = nullptr)
 	{
 		if (g_opengl_context != nullptr)
 			ensure_loaded();
@@ -1151,6 +1264,7 @@ namespace reshade::chams
 				if (g_budget_left <= 0) ++diag->budget;
 				if (!is_solid_primitive(mode) || count <= 0) ++diag->primitive;
 			}
+			if (cap) cap->decision = !s.enabled ? "disabled" : g_opengl_context == nullptr ? "no_context" : g_overlay_open ? "menu_open" : g_budget_left <= 0 ? "budget" : "primitive";
 			real_draw();
 			return;
 		}
@@ -1186,6 +1300,7 @@ namespace reshade::chams
 		// Preserve the existing wall heuristic; its result is diagnostic only
 		// and is not a validated object-identity or character-exclusion rule.
 		const bool wall_hint = gl.GetIntegerv != nullptr && program_is_wall(program);
+		if (cap) cap->wall_hint = wall_hint ? 1 : 0;
 
 		// "dump all" runs before every filter, so skipped pieces show up too
 		if (s.dump_all)
@@ -1202,6 +1317,7 @@ namespace reshade::chams
 		if (mode != GL_TRIANGLES || count < k_min_index_count)
 		{
 			if (diag != nullptr) ++diag->filtered;
+			if (cap) cap->decision = "primitive_or_count";
 			real_draw();
 			return;
 		}
@@ -1209,6 +1325,7 @@ namespace reshade::chams
 		if (!program_is_character(program))
 		{
 			if (diag != nullptr) ++diag->filtered;
+			if (cap) cap->decision = "classifier_reject";
 			real_draw();
 			return;
 		}
@@ -1218,12 +1335,14 @@ namespace reshade::chams
 		if (info == nullptr)
 		{
 			if (diag != nullptr) ++diag->no_info;
+			if (cap) cap->decision = "no_program_info";
 			real_draw();
 			return;
 		}
 		read_matrices(*info);
 
 		const float dist = object_distance(*info);
+		if (cap) cap->state(*info, dist);
 
 		float cam[3] = { 0.0f, 0.0f, 0.0f };
 		camera_of(*info, cam);
@@ -1257,6 +1376,7 @@ namespace reshade::chams
 			if (in_range && at_my_dist)
 			{
 				if (diag != nullptr) ++diag->own_hidden;
+				if (cap) cap->decision = "hide_own";
 				real_draw();
 				return;
 			}
@@ -1273,6 +1393,7 @@ namespace reshade::chams
 		if (!want_glow && !want_stroke && !want_wire)
 		{
 			if (diag != nullptr) ++diag->no_effect;
+			if (cap) cap->decision = "no_effect";
 			real_draw();
 			return;
 		}
@@ -1332,6 +1453,7 @@ namespace reshade::chams
 			if (overlay_captured)
 			{
 				if (diag != nullptr) ++diag->overlay;
+				if (cap) cap->decision = "overlay";
 				return;   // overlay path succeeded: Direct mode passes not needed
 			}
 			// overlay capture did not happen -> fall through to Direct mode below
@@ -1342,6 +1464,7 @@ namespace reshade::chams
 			if (s.render_mode == 0) ++diag->overlay_failed;
 		}
 
+		if (cap) cap->decision = s.render_mode == 0 ? "direct_overlay_fallback" : "direct";
 		// ---- 2. GLOW / HIGHLIGHT: four modes (menu: "Player highlight") -----
 		// Every mode draws the part hidden behind a wall with GL_GREATER and the
 		// part in plain sight with GL_LEQUAL, exactly like before. What changes
