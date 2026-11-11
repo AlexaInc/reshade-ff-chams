@@ -22,6 +22,23 @@ assert fl[10559]['hidden']==fl[10570]['hidden']==0
 assert fl[10560]['hidden']==0 and fl[10571]['hidden']==1
 assert fl[10559]['f']==fl[10560]['f'] and fl[10570]['f']==fl[10571]['f']
 assert all(e['hideown']==1 for e in fl.values())
+capture11=json.loads((root/'tests/fixtures/capture-000011-selected.json').read_text())
+assert capture11['archive_sha256']=='1943b7be1013e1a98b2b27fa78b72cd08c34e1a766d45c39cd15d9a3b8b48b2d'
+c11={e['seq']:e for e in capture11['events']}
+assert c11[41506]['event']=='present_begin' and c11[41506]['context']==1
+assert c11[41507]['event']=='present' and c11[41507]['success']
+assert c11[41513]['event']=='draw_begin' and c11[41513]['draw_id']==c11[41515]['draw_id']
+assert c11[41514]['reason']=='no_observation' and c11[41514]['context']==3
+assert c11[41514]['before_stable']==56 and c11[41514]['estimate']==-1
+assert c11[41127]['decision']=='hide_own' and c11[41577]['decision']=='direct'
+assert (c11[41127]['program'],c11[41127]['count'],c11[41127]['array_buffer'],c11[41127]['element_buffer'])==(c11[41577]['program'],c11[41577]['count'],c11[41577]['array_buffer'],c11[41577]['element_buffer'])
+assert c11[41094]['decision']=='direct' and c11[41094]['stable']==c11[41127]['stable']
+assert c11[1043359]['reason']=='out_of_range' and c11[1043359]['before_estimate']>0
+assert [c11[n]['decision'] for n in (350394,364520,365803)]==['direct','hide_own','direct']
+assert c11[365339]['world']==c11[365803]['world'] and c11[365339]['distance']==c11[365803]['distance']
+assert c11[365757]['event']=='present_begin' and c11[365757]['context']==1
+assert c11[365753]['legacy_global_frame']==3406 and c11[365759]['legacy_global_frame']==3407
+assert c11[365759]['reason']=='no_observation' and c11[365759]['before_estimate']==c11[365753]['estimate']
 s = (root/'source/chams_gl.inl').read_text() + (root/'source/chams_overlay.inl').read_text()
 tokens = sorted(set(re.findall(r'\bGL_[A-Z0-9_]+\b', s)) - {'GL_TRUE','GL_FALSE'})
 names = sorted(set(re.findall(r'\bgl\.([A-Za-z0-9_]+)', s)))
@@ -226,6 +243,44 @@ int main(int argc, char **argv) {
  // enemy, and its third interval is synthetic. No nearby-enemy proof.
  assert(!e0 && !e1 && !e2);
  pending("flicker candidate consistently excluded through tracker interruption",b0 && b1 && b2);
+ // Session 000011, seq 41094/41127: two temporally adjacent candidate
+ // body/part draws have different decisions even with the same stable tracker.
+ // The capture does not prove those draw origins share ownership.
+ settings c11_settings{};c11_settings.hide_own=true;c11_settings.own_distance=@C11_CAP@;
+ program_info c11_info{};c11_info.dist_source="_WorldSpaceCameraPos";
+ own_track c11_state{};c11_state.own_est=@C11_DRAW_EST@;c11_state.stable=55;
+ const bool c11_body=own_distance_excludes(c11_settings,c11_info,@C11_BODY@,c11_state);
+ const bool c11_part=own_distance_excludes(c11_settings,c11_info,@C11_PART@,c11_state);
+ assert(!c11_body && c11_part); // exactly observed, not proof of pixel ownership
+ pending("capture11 putative body and part consistently excluded",c11_body && c11_part);
+ // Real trace: unrelated present_begin/present (context 1, seq 41506/7),
+ // then draw 11504 (context 3) invokes touch_frame; seq 41514 records the
+ // precise no-observation transition. No replacement frame boundary is assumed.
+ g_opengl_context=reinterpret_cast<void *>(0x6000);g_frame_id=2633;touch_frame();
+ own().own_est=@C11_RESET_EST@;own().cand=@C11_RESET_CAND@;own().stable=56;own().frame_min=1e9f;
+ const bool part_before=own_distance_excludes(c11_settings,c11_info,@C11_PART@,own());
+ ++g_frame_id; touch_frame();
+ const bool part_after=own_distance_excludes(c11_settings,c11_info,@C11_AFTER_PART@,own());
+ assert(part_before && !part_after && own().own_est<0 && own().stable==0);
+ pending("capture11 unrelated present does not interrupt ownership",part_before && part_after);
+ // Full captured body visible -> hidden -> visible, including the exact
+ // unrelated present split within one observed clear-to-clear sequence.
+ g_opengl_context=reinterpret_cast<void *>(0x6001);g_frame_id=3406;touch_frame();
+ const bool body_initial=own_distance_excludes(c11_settings,c11_info,@C11_BODY_INITIAL@,own());
+ own().own_est=@C11_BODY_ACQUIRED@;own().stable=30;
+ const bool body_acquired=own_distance_excludes(c11_settings,c11_info,@C11_BODY_ACQ_DIST@,own());
+ own().own_est=@C11_BODY_RESET@;own().cand=@C11_BODY_RESET@;own().stable=32;own().frame_min=1e9f;
+ ++g_frame_id;touch_frame();
+ const bool body_reset=own_distance_excludes(c11_settings,c11_info,@C11_BODY_RESET_DIST@,own());
+ assert(!body_initial && body_acquired && !body_reset);
+ std::printf("capture11 exact body direct -> hide_own -> direct reproduced\n");
+ pending("capture11 body remains excluded across unrelated present",body_initial && body_acquired && body_reset);
+ // Synthetic same-distance control exposes the identity ambiguity. It is NOT
+ // an observed nearby enemy; traces contain no enemy ownership labels.
+ own_track equal_state{};equal_state.own_est=@C11_DRAW_EST@;equal_state.stable=55;
+ const bool local_hypothesis=own_distance_excludes(c11_settings,c11_info,@C11_PART@,equal_state);
+ const bool nearby_enemy_hypothesis=own_distance_excludes(c11_settings,c11_info,@C11_PART@,equal_state);
+ pending("capture11 equal-distance nearby enemy remains visible",local_hypothesis && !nearby_enemy_hypothesis);
  g_opengl_context=nullptr;own()=own_track{};pcache().count=0;icache().count=0;
  // If a declared camera uniform has zero data, name the actual matrix fallback.
  p.view.plain=0;p.view_m[0]=p.view_m[5]=p.view_m[10]=1;p.view_m[12]=-2;
@@ -333,6 +388,13 @@ for token, value in {
  '@F9_ACQUIRED@':events[264480]['before_estimate'], '@F9_MIN@':events[264480]['frame_min'],
  '@FL_CAP@':fl[9073]['owncap'], '@FL_BODY@':fl[9073]['dist'],
  '@FL_EST@':fl[9073]['ownest'], '@FL_CONTROL@':fl[10570]['dist'],
+ '@C11_CAP@':c11[41127]['own_cap'], '@C11_DRAW_EST@':c11[41127]['own_est'],
+ '@C11_BODY@':c11[41094]['distance'], '@C11_PART@':c11[41127]['distance'],
+ '@C11_RESET_EST@':c11[41514]['before_estimate'], '@C11_RESET_CAND@':c11[41514]['before_candidate'],
+ '@C11_AFTER_PART@':c11[41577]['distance'],
+ '@C11_BODY_INITIAL@':c11[350394]['distance'], '@C11_BODY_ACQUIRED@':c11[364473]['estimate'],
+ '@C11_BODY_ACQ_DIST@':c11[364520]['distance'], '@C11_BODY_RESET@':c11[365759]['before_estimate'],
+ '@C11_BODY_RESET_DIST@':c11[365803]['distance'],
 }.items(): head=head.replace(token,repr(value)+'f')
 with tempfile.TemporaryDirectory() as d:
  p=pathlib.Path(d)/'mock.cpp';p.write_text(head);exe=pathlib.Path(d)/'test'
