@@ -24,7 +24,13 @@ namespace reshade::chams::capture {
 }
 int main() {
  using namespace reshade::chams;
- assert(SetEnvironmentVariableW(L"CHAMS_HOST_CALLER_PROBE", L"1"));
+ // D3: the probe build self-activates. Remove the variable and verify it is
+ // absent; sampling must still happen.
+ assert(SetEnvironmentVariableW(L"CHAMS_HOST_CALLER_PROBE", nullptr));
+ {
+  wchar_t probe_env[4] = {};
+  assert(GetEnvironmentVariableW(L"CHAMS_HOST_CALLER_PROBE", probe_env, 4) == 0);
+ }
  auto kernel=GetModuleHandleW(L"kernel32.dll"); assert(kernel);
  assert(std::string(caller_probe::known_name(kernel))=="kernel32.dll");
  // R1 split: this module (the test binary) is the "proxy" by handle comparison,
@@ -39,7 +45,7 @@ int main() {
  capture::draw_ticket t{}; t.id=42;
  caller_probe::sample(123,7,t);
  assert(events.size()==1);
- // Option A: exactly one probe state line per process, with the real gate result.
+ // Probe state line: exactly one per process; D3 makes the probe build self-activating, so it always reads enabled=1.
  assert(reshade::log::log_calls == 1);
  assert(std::string(reshade::log::log_text).find("build=R1-A") != std::string::npos);
  assert(std::string(reshade::log::log_text).find("enabled=1") != std::string::npos);

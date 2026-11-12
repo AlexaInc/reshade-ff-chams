@@ -27,7 +27,8 @@ namespace reshade::log {
  }
 }
 
-bool fake_enabled = false;
+bool fake_enabled = false; // env var state; irrelevant after D3 (probe self-activates)
+unsigned long fake_env_reads = 0; // counts GetEnvironmentVariableW calls; must stay 0 in D3
 static uint64_t fake_generation = 1;
 static std::vector<std::string> emitted;
 static unsigned losses = 0;
@@ -38,20 +39,17 @@ namespace reshade::chams::capture {
  }
  void runtime_record_loss() noexcept { ++losses; }
 }
-int main(int argc, char **argv) {
+int main() {
  using namespace reshade::chams;
- assert(argc==2); fake_enabled = std::string(argv[1])=="on";
+ // D3: the probe build must self-activate. The fake harness reports no
+ // CHAMS_HOST_CALLER_PROBE (fake_enabled=false), so a sampled draw proves
+ // activation without the environment variable — and the env-read counter
+ // proves the variable is never consulted.
+ fake_enabled = false;
  capture::draw_ticket t{}; t.id=42; t.context=3; t.surface=7;
- if (!fake_enabled) {
-  caller_probe::sample(123,7,t); caller_probe::sample(123,7,t);
-  assert(emitted.empty());
-  assert(reshade::log::log_lines.size()==1);
-  assert(reshade::log::log_lines[0].find("build=R1-A")!=std::string::npos);
-  assert(reshade::log::log_lines[0].find("enabled=0")!=std::string::npos);
-  return 0;
- }
  t.id=0; caller_probe::sample(123,7,t); assert(emitted.empty()); t.id=42;
  caller_probe::sample(123,7,t); assert(emitted.size()==1);
+ assert(fake_env_reads==0);
  // Option A: the probe state line is logged exactly once, with the real gate result.
  assert(reshade::log::log_lines.size()==1);
  assert(reshade::log::log_lines[0].find("build=R1-A")!=std::string::npos);
@@ -70,6 +68,7 @@ int main(int argc, char **argv) {
  assert(emitted.size()==128 && losses==0);
  fake_generation=2; caller_probe::sample(123,7,t); assert(emitted.size()==129);
  fake_generation=1; caller_probe::sample(123,7,t); assert(emitted.size()==129); // stale session
+ assert(fake_env_reads==0); // still never read the environment
  assert(reshade::log::log_lines.size()==1); // still exactly one log line per process
  caller_probe::sampler policy(7,10000); std::mutex guard; std::set<uint64_t> selected;
  std::vector<std::thread> threads;

@@ -64,12 +64,11 @@ statement about them as unverified. An unrelated pasted link was not downloaded 
 - **Local probe build:** same msbuild command from a "x64 Native Tools" prompt.
 - **Install & run (on the user's machine, when ready):** install the probe artifact
   exactly like the normal fork (`mod-tools\INSTALL.bat`, folder `C:\Program Files\BlueStacks_nxt`,
-  it backs up the previous `opengl32.dll`), then set the environment **before BlueStacks is
-  started**: `setx CHAMS_HOST_CALLER_PROBE 1` (new terminals only; for same-session use
-  `cmd /c "set CHAMS_HOST_CALLER_PROBE=1 && start \"\" \"C:\Program Files\BlueStacks_nxt\HD-Player.exe\""`
-  or launch BlueStacks from an environment where the variable is set). Start runtime
-  tracking from the Chams menu as usual. Deactivation: `setx CHAMS_HOST_CALLER_PROBE /d`.
-  Without the variable the probe does nothing at runtime.
+  it backs up the previous `opengl32.dll`), then start runtime tracking from the Chams
+  menu as usual. **D3 (approved 2026-11-12): the probe build self-activates — no
+  environment variable is used or required.** Sampling still happens only while
+  tracking ("Start tracking") is active and draws pass the normal capture gates.
+  To run without the probe, install the default `ReShade64-chams` artifact instead.
 - **Expected output:** ≤128 `host_caller_sample` records per session, ≲2 KB each
   (≲256 KB total, typically far less), interleaved in the normal capture session folder.
   No effect on Chams decisions, overlay, budget or enemy Chams. Record losses, if any,
@@ -105,17 +104,18 @@ The probe now logs, **exactly once per process at the first draw that reaches
 
 `[CHAMS] host caller probe: build=R1-A enabled=<1|0>`
 
-- `enabled=1` — `CHAMS_HOST_CALLER_PROBE=1` was visible in the process
-  environment at that moment; the gate is open and draws will be sampled.
-- `enabled=0` — the gate is closed; no `host_caller_sample` records will be
-  emitted (activation issue: wrong process/old instance, missing env var, or
-  env scrubbed by a launcher).
+- `enabled=1` — in current builds (D3, approved 2026-11-12) the probe build
+  self-activates and always prints `enabled=1`; the gate is open and draws
+  will be sampled once tracking is active.
+- Historic note (R1-A/2026-11-12): the line used to report whether
+  `CHAMS_HOST_CALLER_PROBE=1` was visible in the process environment; it is no
+  longer influenced by any environment variable.
 - `build=R1-A` — identifies the R1 probe artifact with the Option A line.
 
 The line is compiled only when the probe is compiled (`CHAMS_HOST_CALLER_PROBE`
 defined) — **the default production artifact logs nothing**. Activation logic,
-env-var handling and sampling behavior are unchanged; the log failure path is
-swallowed and can never affect rendering. `ReShade.log` is written next to
+sampling behavior and the log failure path are unchanged; the log failure path
+is swallowed and can never affect rendering. `ReShade.log` is written next to
 `HD-Player.exe` (i.e., in `C:\Program Files\BlueStacks_nxt\ReShade.log` when the
 fork is installed there; the exact path is printed in the log itself at startup
 and shown in the Chams menu). To check activation, launch BlueStacks, play a
@@ -156,3 +156,29 @@ D2 record (`%TEMP%\reshade-log-target.txt`, overwritten on every proxy load):
   distinguishes "line was never emitted" from "line was emitted into a
   different sink". It contains no environment contents, config values or user
   data; embedded quotes/control characters are replaced to keep it one line.
+
+## D3 — probe build self-activates; no environment gate (approved 2026-11-12)
+
+The runtime environment-variable gate (`CHAMS_HOST_CALLER_PROBE` read via
+`GetEnvironmentVariableW` in `caller_probe::enabled()`) is removed. In builds
+compiled with `CHAMS_HOST_CALLER_PROBE`, `enabled()` returns `true`
+unconditionally; no environment variable is read anywhere on the probe path.
+Behavior otherwise unchanged:
+
+- sampling still requires: tracking active (`Start tracking` from the Chams
+  menu), a draw passing both capture gates, `ticket.id != 0`, the existing
+  512-draw sampling interval, and the 128-sample per-session limit;
+- all probe code remains behind `#if defined(_WIN32) && defined(CHAMS_HOST_CALLER_PROBE)`;
+- the default production build is unchanged and still contains none of this;
+- the R1-A log line (`build=R1-A enabled=<1|0>`) is unchanged and now always
+  reports `enabled=1` in the probe build;
+- D1/D2 diagnostics are unchanged.
+
+Tests: `tests/chams_host_caller_probe_test.cpp` now runs with the fake
+environment reporting no variable and asserts (a) a draw is sampled, (b) the
+environment is never read (`fake_env_reads == 0`); `tests/run_host_caller_probe_tests.py`
+runs it once. `tests/chams_host_caller_windows_test.cpp` removes the variable and
+asserts absence before sampling. Sampling limits, stale-session and concurrency
+coverage are unchanged. Rationale: the env gate could not be made reliable
+through the BlueStacks launcher/singleton chain; activation is no longer a
+per-machine lottery. Use the default artifact to run without the probe.

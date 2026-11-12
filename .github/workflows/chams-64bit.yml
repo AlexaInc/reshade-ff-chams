@@ -32,8 +32,8 @@ jobs:
           /tmp/chams-config-validation-test /tmp/chams-validation.ini
   # Separate, opt-in PROBE build. The default `build` job above is unchanged and
   # its artifact does NOT contain the host caller probe. This job additionally
-  # defines CHAMS_HOST_CALLER_PROBE (the DLL still requires CHAMS_HOST_CALLER_PROBE=1
-  # in the environment before HD-Player.exe starts, and runs only during an active
+  # defines CHAMS_HOST_CALLER_PROBE (D3 2026-11-12: the probe build self-activates;
+  # no environment variable is used, and it runs only during an active
   # runtime capture). Produced only on the investigation branch or manual dispatch.
   build-probe:
     runs-on: windows-latest

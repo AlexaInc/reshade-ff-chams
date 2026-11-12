@@ -1,8 +1,10 @@
 #pragma once
 // Experimental host-side call-site evidence ONLY. This is not a guest/host
 // renderer bridge and cannot identify a player or prove a graphics handoff.
-// Compile with CHAMS_HOST_CALLER_PROBE and set CHAMS_HOST_CALLER_PROBE=1 before
-// process start; it runs only while the existing runtime capture is active.
+// D3 (approved 2026-11-12): the probe build is self-activating. Compilation
+// with CHAMS_HOST_CALLER_PROBE is the activation signal; no environment
+// variable is read or required. It runs only while the existing runtime
+// capture is active (the renderer/tracking gates are unchanged).
 // R1: the allowlist covers the live 2.132.1 module set (incl. libaosl.dll,
 // glslang / SPIR-V cross-compilers); the ReShade proxy's own frames are labelled
 // "reshade_proxy_opengl32.dll" by module-handle comparison (never by path), and
@@ -24,11 +26,11 @@ namespace reshade::chams::caller_probe
 {
  inline bool enabled() noexcept
  {
-  static const bool value = [] {
-   wchar_t text[4] = {};
-   return GetEnvironmentVariableW(L"CHAMS_HOST_CALLER_PROBE", text, 4) == 1 && text[0] == L'1';
-  }();
-  return value;
+  // D3: the probe build self-activates. Compilation with CHAMS_HOST_CALLER_PROBE
+  // is the activation signal; no environment variable is read or required.
+  // Runtime tracking/capture gates (chams_gl.inl, chams_capture.cpp) are
+  // unchanged and still required before any sampling can happen.
+  return true;
  }
  // ---- D1/D2: boundary diagnostics (probe builds only) --------------------
  // Each D1 line is emitted at most once per process and always carries PID/TID,
