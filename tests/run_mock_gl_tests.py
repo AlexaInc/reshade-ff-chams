@@ -335,6 +335,59 @@ int main(int argc, char **argv) {
    ++g_frame_id;touch_frame();
  }
  assert(own().own_est<0 && own().stable==0);
+ // 2026-11-12 hardening: sparse frames with an established estimate.
+ // Missing own-part draws (a weapon fork hidden for a frame, or culled)
+ // must neither rebase the candidate to a lone enemy distance nor reset
+ // stable. ADS/all-near frames must not destroy the estimate either.
+ g_opengl_context=reinterpret_cast<void *>(0x7100);g_frame_id=4000;touch_frame();
+ own()=own_track{};
+ settings sg{};sg.hide_own=true;sg.own_distance=5.5f;
+ program_info sg_info{};sg_info.dist_source="_WorldSpaceCameraPos";
+ const float sg_roots[9]={3.037654f,3.037654f,3.037654f,3.037654f,3.037654f,3.037654f,3.037652f,3.037654f,3.037654f};
+ for(int i=0;i<31;i++){
+   for(float r : sg_roots) note_character_distance(r);
+   note_character_distance(2.62f);note_character_distance(3.25f);   // bone + far bone
+   ++g_frame_id;touch_frame();
+ }
+ assert(own().stable==31 && own().own_est>0);
+ const float est_before=own().own_est;
+ // Missing own forks, leaving a single enemy-only lone sample at 4.5 m: skipped, estimate kept.
+ ++g_frame_id;note_character_distance(4.5f);touch_frame();
+ assert(own().own_est==est_before && own().stable==31 && own().cand>0);
+ // A lone plausible sample that does not corroborate the estimate (near enemy at 4.9 m): skipped.
+ ++g_frame_id;note_character_distance(4.9f);touch_frame();
+ assert(own().own_est==est_before && own().stable==31);
+ // A lone plausible sample that DOES corroborate (a surviving root fork at 3.038 m): learned.
+ ++g_frame_id;note_character_distance(3.038f);touch_frame();
+ assert(own().stable==32 && own().own_est>0);
+ // Two plausible samples, one corroborating the estimate, one enemy at 4.8 m: corroboration wins.
+ ++g_frame_id;note_character_distance(3.04f);note_character_distance(4.8f);touch_frame();
+ assert(own().stable==33 && own().own_est>0);
+ // Nearby enemy preserved: the estimate stays glued to the root cluster; 3.674 m draw not excluded.
+ assert(!own_distance_excludes(sg,sg_info,3.674f,own()));
+ assert(own_distance_excludes(sg,sg_info,3.037654f,own()));
+ // ADS/all-near burst immediately afterwards: estimate survives, hiding stays available.
+ for(int i=0;i<6;i++){
+   note_character_distance(1.13f);note_character_distance(1.01f);note_character_distance(1.37f);
+   ++g_frame_id;touch_frame();
+ }
+ assert(std::fabs(own().own_est-est_before)<0.05f && own().stable>=33 && std::fabs(own().own_est-3.038f)<0.05f);
+ assert(own_distance_excludes(sg,sg_info,3.037654f,own()));
+ // Cold start: a sparse lone far sample still bootstraps the candidate (legacy behaviour kept).
+ own()=own_track{};++g_frame_id;note_character_distance(4.6f);touch_frame();
+ assert(own().cand>0 && own().stable==1 && own().own_est<0);
+ // Weapon-switch gap (≥3 plausible but no cluster, e.g. roots missing for a frame): skipped, kept.
+ own()=own_track{};
+ for(int i=0;i<31;i++){ for(float r : sg_roots) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ const float ws_est=own().own_est;const int ws_stable=own().stable;
+ ++g_frame_id;note_character_distance(2.62f);note_character_distance(3.20f);note_character_distance(3.30f);touch_frame();
+ assert(own().own_est==ws_est && own().stable==ws_stable);
+ // Estimate recovery after an honest zero-character wipe: re-acquires from the root cluster; enemy untouched.
+ own()=own_track{};++g_frame_id;touch_frame();
+ assert(own().own_est<0 && own().stable==0);
+ for(int i=0;i<30;i++){ for(float r : sg_roots) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ assert(own().own_est>0 && own().stable>=30);
+ assert(!own_distance_excludes(sg,sg_info,3.674f,own()));
  g_opengl_context=nullptr;own()=own_track{};pcache().count=0;icache().count=0;
  // If a declared camera uniform has zero data, name the actual matrix fallback.
  p.view.plain=0;p.view_m[0]=p.view_m[5]=p.view_m[10]=1;p.view_m[12]=-2;

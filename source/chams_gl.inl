@@ -206,16 +206,21 @@ namespace reshade::chams
 	// bone toward the camera and must not destroy the sequence.
 	//
 	// Returns the modal distance (>=1.5m, <=5.0m) with >=3 votes; with fewer
-	// than 3 plausible samples the minimum plausible sample is used (sparse
-	// frames behave as the legacy tracker); with 3+ plausible samples but no
-	// cluster the frame is skipped; if samples exist but all are <1.5m the
-	// frame is skipped (near-camera transient) instead of wiping the estimate.
-	// Zero comparable draws at all keeps the legacy forget behaviour.
+	// than 3 plausible samples the frame is *corroborated* only when one of
+	// those samples agrees with the established candidate/estimate (missing
+	// own-part draws — e.g. a weapon fork hidden for a frame — otherwise an
+	// enemy at 3-5m could rebase the tracker and wipe its progress); without
+	// an established reference (cold start) the nearest plausible sample is
+	// used as before; with 3+ plausible samples but no cluster the frame is
+	// skipped; if samples exist but all are <1.5m the frame is skipped
+	// (near-camera transient) instead of wiping the estimate. Zero comparable
+	// draws at all keeps the legacy forget behaviour.
 	inline float pick_frame_observation(const own_track &o, bool *skip, bool *wipe, int *votes_out)
 	{
 		*skip = false; *wipe = false; *votes_out = 0;
+		const float reference = o.own_est > 0.0f ? o.own_est : o.cand;
 		int plausible = 0, best_votes = 0;
-		float min_plausible = 1e9f, best_modal = -1.0f;
+		float min_plausible = 1e9f, best_modal = -1.0f, closest_plausible = 1e9f;
 		bool any_near = false;
 		for (int i = 0; i < o.frame_obs_n; ++i)
 		{
@@ -224,6 +229,8 @@ namespace reshade::chams
 			if (d > 5.0f) continue;
 			++plausible;
 			if (d < min_plausible) min_plausible = d;
+			if (reference > 0.0f && std::fabs(d - reference) < std::fabs(closest_plausible - reference))
+				closest_plausible = d;
 			int votes = 0;
 			for (int j = 0; j < o.frame_obs_n; ++j)
 				if (std::fabs(o.frame_obs[j] - d) <= 0.05f) ++votes;
@@ -238,15 +245,32 @@ namespace reshade::chams
 			best_votes = 1;
 			any_near = o.frame_min < 1.5f;
 			if (o.frame_min >= 1.5f && o.frame_min <= 5.0f)
+			{
 				plausible = 1;
+				closest_plausible = o.frame_min;
+			}
 		}
 
 		if (plausible > 0)
 		{
 			if (plausible < 3)
 			{
+				if (reference > 0.0f)
+				{
+					// Sparse frame with an established tracker: learn only from
+					// a sample that agrees with it. A distant lone sample (enemy,
+					// or a detached fork) proves nothing and must not rebase the
+					// candidate — that is the missing-draw / weapon-hide dropout.
+					if (std::fabs(closest_plausible - reference) <= 0.3f)
+					{
+						*votes_out = best_votes;
+						return closest_plausible;
+					}
+					*skip = true;          // corroboration missing: keep the estimate
+					return -1.0f;
+				}
 				*votes_out = best_votes;
-				return min_plausible;      // sparse frame: nearest plausible (legacy)
+				return min_plausible;      // cold start: nearest plausible (legacy)
 			}
 			if (best_votes >= 3)
 			{
