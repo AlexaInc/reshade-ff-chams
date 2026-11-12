@@ -18,6 +18,15 @@ int main() {
  assert(SetEnvironmentVariableW(L"CHAMS_HOST_CALLER_PROBE", L"1"));
  auto kernel=GetModuleHandleW(L"kernel32.dll"); assert(kernel);
  assert(std::string(caller_probe::known_name(kernel))=="kernel32.dll");
+ // R1 split: this module (the test binary) is the "proxy" by handle comparison,
+ // never by path; an allowlisted foreign opengl32 keeps the plain name.
+ HMODULE self = nullptr;
+ GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+  reinterpret_cast<LPCWSTR>(&main), &self);
+ assert(self != nullptr);
+ assert(std::string(caller_probe::module_label(self, self)) == "reshade_proxy_opengl32.dll");
+ assert(std::string(caller_probe::module_label(kernel, self)) == "kernel32.dll");
+ assert(caller_probe::module_label(nullptr, self) == nullptr);
  capture::draw_ticket t{}; t.id=42;
  caller_probe::sample(123,7,t);
  assert(events.size()==1);

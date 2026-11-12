@@ -35,9 +35,14 @@ int main(int argc, char **argv) {
  caller_probe::sample(123,7,t); assert(emitted.size()==1);
  auto &s=emitted[0];
  assert(s.find("\"draw_id\":42")!=s.npos && s.find("\"correlation_status\":\"guest_unobserved\"")!=s.npos);
+ assert(s.find("\"returned_frames\":6")!=s.npos);
+ assert(s.find("reshade_proxy_opengl32.dll")!=s.npos && s.find("\"return_rva\":384")!=s.npos);
+ assert(s.find("opengl32.dll(win)")!=s.npos && s.find("\"return_rva\":512")!=s.npos);
  assert(s.find("libOpenglRender.dll")!=s.npos && s.find("\"return_rva\":256")!=s.npos);
  assert(s.find("\"module\":\"other\"")!=s.npos && s.find("\"module\":\"unresolved\"")!=s.npos);
  assert(s.find("secret-module")==s.npos && s.find("Private")==s.npos && s.find("Program Files")==s.npos);
+ assert(s.find("System32")==s.npos && s.find("BlueStacks")==s.npos);
+ assert(s.find("libaosl.dll")!=s.npos); // R1 allowlist label appears, path does not
  for(int i=0;i<512*130;i++) caller_probe::sample(123,7,t);
  assert(emitted.size()==128 && losses==0);
  fake_generation=2; caller_probe::sample(123,7,t); assert(emitted.size()==129);

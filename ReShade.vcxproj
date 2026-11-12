@@ -111,7 +111,10 @@
   <ItemDefinitionGroup>
     <ClCompile>
       <!-- Fix inconsistent DLL linkage warnings because of prototypes defined in "wingdi.h" and "Winsock2.h" using "__declspec(dllimport)" -->
-      <PreprocessorDefinitions>_GDI32_;WINSOCK_API_LINKAGE=;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- CHAMS_HOST_CALLER_PROBE is OFF unless explicitly requested with /p:CHAMS_HOST_CALLER_PROBE=1.
+           The default (and shipping CI "chams-64bit") build is byte-identical to before: the probe stays compiled out. -->
+      <PreprocessorDefinitions Condition="'$(CHAMS_HOST_CALLER_PROBE)'=='1'">_GDI32_;WINSOCK_API_LINKAGE=;CHAMS_HOST_CALLER_PROBE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(CHAMS_HOST_CALLER_PROBE)'!='1'">_GDI32_;WINSOCK_API_LINKAGE=;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">

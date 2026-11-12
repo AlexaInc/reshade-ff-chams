@@ -30,6 +30,38 @@ jobs:
           g++ -std=c++17 tests/chams_config_validation_test.cpp -o /tmp/chams-config-validation-test
           printf '[CHAMS]\nEnabled=1\nGlowAlpha=0.55\n' > /tmp/chams-validation.ini
           /tmp/chams-config-validation-test /tmp/chams-validation.ini
+  # Separate, opt-in PROBE build. The default `build` job above is unchanged and
+  # its artifact does NOT contain the host caller probe. This job additionally
+  # defines CHAMS_HOST_CALLER_PROBE (the DLL still requires CHAMS_HOST_CALLER_PROBE=1
+  # in the environment before HD-Player.exe starts, and runs only during an active
+  # runtime capture). Produced only on the investigation branch or manual dispatch.
+  build-probe:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    if: github.ref == 'refs/heads/agent/chams-investigation-build' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - uses: microsoft/setup-msbuild@v2
+      - name: Smoke-test experimental host probe with Windows APIs
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual Studio C++ tools not found" }
+          $cmd = 'call "' + $vs + '\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 >nul && cl /nologo /std:c++17 /EHsc /O2 tests\chams_host_caller_windows_test.cpp /Fe:chams-host-probe-test.exe && chams-host-probe-test.exe'
+          cmd /c $cmd
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build 64-bit Release with host caller probe
+        run: msbuild ReShade.sln /t:ReShade /p:Configuration=Release /p:Platform=64-bit /p:CHAMS_HOST_CALLER_PROBE=1 /m /v:m
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReShade64-chams-probe
+          path: bin/x64/Release/ReShade64.dll
+          if-no-files-found: error
+
   build:
     runs-on: windows-latest
     timeout-minutes: 90
