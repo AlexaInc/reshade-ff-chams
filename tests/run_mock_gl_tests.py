@@ -118,8 +118,10 @@ int main(int argc, char **argv) {
  own()=own_track{}; for(int i=0;i<30;i++){own().frame_min=2.17f;update_own_estimate();} assert(own().stable==30);assert(own().own_est>2.16f&&own().own_est<2.18f);
  update_own_estimate(); assert(own().own_est<0 && own().stable==0);
  own()=own_track{}; for(int i=0;i<29;i++){own().frame_min=2.17f;update_own_estimate();}
- own().frame_min=1.0f; update_own_estimate(); assert(own().stable==0 && own().own_est<0);
- own().frame_min=2.17f;update_own_estimate();assert(own().stable==1 && own().own_est<0);
+ // A single sub-1.5m sample is the observed gun-switch/ADS bone-swing signature:
+ // the update is skipped and the in-progress sequence (stable==29) survives.
+ own().frame_min=1.0f; update_own_estimate(); assert(own().stable==29 && own().own_est<0 && own().cand>0);
+ own().frame_min=2.17f;update_own_estimate();assert(own().stable==30 && own().own_est>0);
  for(int i=1;i<30;i++){own().frame_min=2.17f;update_own_estimate();}
  assert(own().own_est>0);own().frame_min=8.0f;update_own_estimate();assert(own().own_est<0 && own().stable==0);
  pcache().count=0;g_settings.detect_mode=0;assert(!program_is_character(123));
@@ -281,6 +283,58 @@ int main(int argc, char **argv) {
  const bool local_hypothesis=own_distance_excludes(c11_settings,c11_info,@C11_PART@,equal_state);
  const bool nearby_enemy_hypothesis=own_distance_excludes(c11_settings,c11_info,@C11_PART@,equal_state);
  pending("capture11 equal-distance nearby enemy remains visible",local_hypothesis && !nearby_enemy_hypothesis);
+ g_opengl_context=nullptr;own()=own_track{};pcache().count=0;icache().count=0;
+ // 2026-11-12 packet (capture-d3) replay: the own model is drawn every frame
+ // as a multipart root cluster at a near-constant distance (programs
+ // 276/277/278/279 at 3.038 m, 8-9 draws), one animated bone origin
+ // oscillating 2.58-2.96 m, one far-bone origin at 3.2 m, plus enemies far
+ // outside (>=3.674 m observed). Before the multipart-modal fix the tracker
+ // learned the bone and wiped out on the swing; now the root cluster is the
+ // observation and a gun-switch/ADS swing (bone at 0.83 m) is survivable.
+ g_opengl_context=reinterpret_cast<void *>(0x7000);g_frame_id=3000;touch_frame();
+ own()=own_track{};
+ settings d3_settings{};d3_settings.hide_own=true;d3_settings.own_distance=5.5f;
+ program_info d3_info{};d3_info.dist_source="_WorldSpaceCameraPos";
+ const float d3_roots[9]={3.037654f,3.037654f,3.037654f,3.037654f,3.037654f,3.037654f,3.037652f,3.037654f,3.037654f};
+ for(int i=0;i<30;i++){
+   for(float r : d3_roots) note_character_distance(r);
+   note_character_distance(2.58f+0.02f*float(i%20));   // animated bone (frame minimum)
+   note_character_distance(3.25f);                     // far bone
+   note_character_distance(27.5f);                     // enemy, out of plausible range
+   ++g_frame_id;touch_frame();
+ }
+ assert(own().stable==30);
+ assert(std::fabs(own().own_est-3.038f)<0.05f);        // root cluster, not the bone
+ assert(own_distance_excludes(d3_settings,d3_info,3.037654f,own()));   // root hidden
+ assert(own_distance_excludes(d3_settings,d3_info,3.20f,own()));       // far bone in window
+ assert(!own_distance_excludes(d3_settings,d3_info,3.674f,own()));     // nearest enemy untouched
+ // Gun-switch / ADS transient: the bone swings to 0.83 m — no wipe, hiding persists.
+ for(int i=0;i<15;i++){
+   for(float r : d3_roots) note_character_distance(r);
+   note_character_distance(0.83f);
+   note_character_distance(3.25f);
+   ++g_frame_id;touch_frame();
+   assert(own().own_est>0 && own().stable>=30);
+   assert(own_distance_excludes(d3_settings,d3_info,3.037654f,own()));
+ }
+ // Two enemy parts in range cannot outvote the 9-draw root cluster.
+ for(int i=0;i<30;i++){
+   for(float r : d3_roots) note_character_distance(r);
+   note_character_distance(3.674f);note_character_distance(3.674f);
+   ++g_frame_id;touch_frame();
+ }
+ assert(own().own_est>0 && own().stable>=75 && std::fabs(own().own_est-3.038f)<0.05f);
+ assert(!own_distance_excludes(d3_settings,d3_info,3.674f,own()));
+ // A genuine zero-character frame still forgets the estimate (death/spectate safety).
+ ++g_frame_id;touch_frame();
+ assert(own().own_est<0 && own().stable==0);
+ // Spread-out origins with no cluster learn nothing and never acquire.
+ own()=own_track{};
+ for(int i=0;i<30;i++){
+   note_character_distance(2.0f);note_character_distance(3.0f);note_character_distance(4.0f);
+   ++g_frame_id;touch_frame();
+ }
+ assert(own().own_est<0 && own().stable==0);
  g_opengl_context=nullptr;own()=own_track{};pcache().count=0;icache().count=0;
  // If a declared camera uniform has zero data, name the actual matrix fallback.
  p.view.plain=0;p.view_m[0]=p.view_m[5]=p.view_m[10]=1;p.view_m[12]=-2;

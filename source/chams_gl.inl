@@ -161,15 +161,33 @@ namespace reshade::chams
 	// Own-character estimate is a distance-only heuristic, not an ownership
 	// signal. A nearby stationary enemy or accessory origin can be closer than
 	// the actual player; object identity is not established by these values.
-	// Consecutive plausible minima are required before exclusion is attempted.
+	// Consecutive plausible observations are required before exclusion is
+	// attempted.
 	struct own_track
 	{
-		float frame_min = 1e9f;   // closest character draw seen this frame
+		float frame_min = 1e9f;   // closest character draw seen this frame (capture record only)
+		// Distances of all character draws seen this frame (multipart histogram,
+		// capped). The true invariant of the own model is its root cluster —
+		// many draws at one near-constant distance per frame — not the single
+		// closest (animated bone) origin that frame_min tracks.
+		float frame_obs[64] = {};
+		int   frame_obs_n   = 0;
 		float cand      = -1.0f;  // candidate distance being confirmed
 		float own_est   = -1.0f;  // learned distance of my own model (-1 = unknown)
 		int   stable    = 0;      // consecutive frames the candidate held
 	};
 	inline own_track &own() { static thread_local own_track o; return o; }
+
+	// Record one comparable character-draw distance for this frame. O(1),
+	// drop-on-full; the frame minimum is still tracked separately.
+	inline void note_character_distance(float dist)
+	{
+		if (!std::isfinite(dist) || dist <= 0.0f)
+			return;
+		own_track &o = own();
+		if (o.frame_obs_n < static_cast<int>(sizeof(o.frame_obs) / sizeof(o.frame_obs[0])))
+			o.frame_obs[o.frame_obs_n++] = dist;
+	}
 
 	// Single definition of the legacy per-draw decision. Kept separate so
 	// capture-derived tests can expose its known limitations without claiming
@@ -181,65 +199,137 @@ namespace reshade::chams
 			std::fabs(distance - o.own_est) <= 0.2f;
 	}
 
+	// Pick this frame's own-character observation from the multipart histogram.
+	// The own model is drawn as many parts per frame whose origins cluster at a
+	// near-constant distance (the root), while the frame minimum is only the
+	// nearest animated bone origin. A gun-switch / ADS transient swings that
+	// bone toward the camera and must not destroy the sequence.
+	//
+	// Returns the modal distance (>=1.5m, <=5.0m) with >=3 votes; with fewer
+	// than 3 plausible samples the minimum plausible sample is used (sparse
+	// frames behave as the legacy tracker); with 3+ plausible samples but no
+	// cluster the frame is skipped; if samples exist but all are <1.5m the
+	// frame is skipped (near-camera transient) instead of wiping the estimate.
+	// Zero comparable draws at all keeps the legacy forget behaviour.
+	inline float pick_frame_observation(const own_track &o, bool *skip, bool *wipe, int *votes_out)
+	{
+		*skip = false; *wipe = false; *votes_out = 0;
+		int plausible = 0, best_votes = 0;
+		float min_plausible = 1e9f, best_modal = -1.0f;
+		bool any_near = false;
+		for (int i = 0; i < o.frame_obs_n; ++i)
+		{
+			const float d = o.frame_obs[i];
+			if (d < 1.5f) { any_near = true; continue; }
+			if (d > 5.0f) continue;
+			++plausible;
+			if (d < min_plausible) min_plausible = d;
+			int votes = 0;
+			for (int j = 0; j < o.frame_obs_n; ++j)
+				if (std::fabs(o.frame_obs[j] - d) <= 0.05f) ++votes;
+			if (votes > best_votes) { best_votes = votes; best_modal = d; }
+		}
+		// Legacy single-sample path: frame_min may be set without samples.
+		const bool legacy_single = o.frame_obs_n == 0 && o.frame_min < 1e8f;
+		if (legacy_single)
+		{
+			min_plausible = o.frame_min;
+			best_modal = o.frame_min;
+			best_votes = 1;
+			any_near = o.frame_min < 1.5f;
+			if (o.frame_min >= 1.5f && o.frame_min <= 5.0f)
+				plausible = 1;
+		}
+
+		if (plausible > 0)
+		{
+			if (plausible < 3)
+			{
+				*votes_out = best_votes;
+				return min_plausible;      // sparse frame: nearest plausible (legacy)
+			}
+			if (best_votes >= 3)
+			{
+				*votes_out = best_votes;
+				return best_modal;          // persistent root cluster
+			}
+			*skip = true;                  // several candidates, no cluster: learn nothing
+			return -1.0f;
+		}
+		if (legacy_single ? (o.frame_min < 1.5f) : any_near)
+		{
+			// Near-camera transient (bone swing). Forgetting here destroys the
+			// learned estimate; keep it untouched instead.
+			*skip = true;
+			return -1.0f;
+		}
+		if (!legacy_single && o.frame_obs_n == 0 && o.frame_min >= 1e8f)
+		{
+			// Nothing drawn this frame: forget the estimate (a nearby enemy in
+			// the next frame must not inherit it).
+			*wipe = true;
+			return -1.0f;
+		}
+		// Samples existed but every one is too far: same forget as legacy.
+		*wipe = true;
+		return -1.0f;
+	}
+
 	inline void update_own_estimate()
 	{
 		own_track &o = own();
 		const bool tracking = capture::runtime_enabled();
 		const own_track before = tracking ? o : own_track{};
-		if (o.frame_min < 1e8f)
+		bool skip = false, wipe = false;
+		int mode_votes = 0;
+		const float observation = pick_frame_observation(o, &skip, &wipe, &mode_votes);
+		if (!skip && !wipe)
 		{
 			// Only learn from plausible third-person distances (1.5m - 5m).
 			// Enemy distances outside this range are ignored so they cannot
 			// corrupt the own-character estimate.
-			const bool plausible = (o.frame_min >= 1.5f && o.frame_min <= 5.0f);
-			if (plausible)
+			if (o.cand < 0.0f || std::fabs(observation - o.cand) > 0.3f)
 			{
-				if (o.cand < 0.0f || std::fabs(o.frame_min - o.cand) > 0.3f)
-				{
-					o.cand   = o.frame_min;
-					o.stable = 1;
-				}
-				else
-				{
-					o.cand   = o.cand * 0.7f + o.frame_min * 0.3f;
-					o.stable = (o.stable < 1000) ? o.stable + 1 : 1000;
-				}
-				// Only accept consecutive plausible observations. This distance is
-				// still a heuristic and cannot establish player ownership.
-				if (o.stable >= 30)
-					o.own_est = o.cand;
+				o.cand   = observation;
+				o.stable = 1;
 			}
 			else
 			{
-				// An out-of-range minimum interrupts the sequence; retaining an
-				// old estimate here could hide a later, unrelated draw.
-				o.cand = -1.0f;
-				o.stable = 0;
-				o.own_est = -1.0f;
+				o.cand   = o.cand * 0.7f + observation * 0.3f;
+				o.stable = (o.stable < 1000) ? o.stable + 1 : 1000;
 			}
+			// Only accept consecutive plausible observations. This distance is
+			// still a heuristic and cannot establish player ownership.
+			if (o.stable >= 30)
+				o.own_est = o.cand;
 		}
-		else
+		else if (wipe)
 		{
-			// No character drawn this frame -> forget the estimate so a nearby
-			// enemy in the next frame does not get treated as "mine".
+			// No plausible character draw this frame -> forget the estimate so a
+			// nearby enemy in the next frame does not get treated as "mine".
 			o.cand    = -1.0f;
 			o.stable  = 0;
 			o.own_est = -1.0f;
 		}
+		// skip: a near-camera transient or an ambiguous frame was observed;
+		// keep the estimate, candidate and stability untouched.
 		if (tracking) {
-			const char *reason = before.frame_min >= 1e8f ? "no_observation" :
-				(before.frame_min < 1.5f || before.frame_min > 5.0f) ? "out_of_range" :
-				(before.cand < 0 || std::fabs(before.frame_min - before.cand) > 0.3f) ? "candidate_changed" :
+			const char *reason = skip ? "outlier_skipped" :
+				wipe ? ((before.frame_min >= 1e8f && before.frame_obs_n == 0) ? "no_observation" : "out_of_range") :
+				(before.cand < 0 || std::fabs(observation - before.cand) > 0.3f) ? "candidate_changed" :
 				(before.stable < 30 && o.stable >= 30) ? "acquired" : "candidate_continued";
 			try { std::string line = std::string("\"reason\":\"") + reason + "\",\"legacy_global_frame\":" + std::to_string(g_frame_id) +
 				",\"frame_min\":" + capture::json_number(before.frame_min) + ",\"before_candidate\":" + capture::json_number(before.cand) +
 				",\"before_estimate\":" + capture::json_number(before.own_est) + ",\"before_stable\":" + std::to_string(before.stable) +
-				",\"candidate\":" + capture::json_number(o.cand) + ",\"estimate\":" + capture::json_number(o.own_est) + ",\"stable\":" + std::to_string(o.stable);
+				",\"candidate\":" + capture::json_number(o.cand) + ",\"estimate\":" + capture::json_number(o.own_est) + ",\"stable\":" + std::to_string(o.stable) +
+				",\"mode\":" + capture::json_number(skip || wipe ? -1.0f : observation) +
+				",\"mode_votes\":" + std::to_string(skip || wipe ? 0 : mode_votes);
 				capture::runtime_inflight_event(capture::native_context(), "own_tracker", line,
 					capture::runtime_inflight_surface(capture::native_surface()));
 			} catch (...) { /* diagnostic must not terminate the renderer */ }
 		}
 		o.frame_min = 1e9f;
+		o.frame_obs_n = 0;
 	}
 
 	inline void reset_frame_caches()
@@ -1541,8 +1631,12 @@ namespace reshade::chams
 		// Distance-only ownership remains a heuristic. All measurements used
 		// here must have the same Euclidean meaning; clip-w is axial depth.
 		const bool comparable_distance = std::strcmp(info->dist_source, "MATRIX_VP") != 0;
-		if (comparable_distance && dist > 0.0f && dist < own().frame_min)
-			own().frame_min = dist;
+		if (comparable_distance && dist > 0.0f)
+		{
+			note_character_distance(dist);
+			if (dist < own().frame_min)
+				own().frame_min = dist;
+		}
 
 		if (own_distance_excludes(s, *info, dist, own()))
 		{
