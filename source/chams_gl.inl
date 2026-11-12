@@ -1308,9 +1308,24 @@ namespace reshade::chams
 		const char *dist_source = "unknown";
 		capture_gl_scope(const char *name, GLenum prim, GLsizei n) : api(name), mode(prim), count(n)
 		{
-			if (!capture::runtime_enabled()) return;
+#if defined(_WIN32) && defined(CHAMS_HOST_CALLER_PROBE)
+			caller_probe::note_gate_entry();
+#endif
+			if (!capture::runtime_enabled())
+			{
+#if defined(_WIN32) && defined(CHAMS_HOST_CALLER_PROBE)
+				caller_probe::note_gate_disabled();
+#endif
+				return;
+			}
 			const auto start = std::chrono::steady_clock::now();
-			if (!capture::runtime_begin_draw()) return;
+			if (!capture::runtime_begin_draw())
+			{
+#if defined(_WIN32) && defined(CHAMS_HOST_CALLER_PROBE)
+				caller_probe::note_begin_draw_failed();
+#endif
+				return;
+			}
 			active = true; context = capture::native_context(); surface = capture::runtime_inflight_surface(capture::native_surface());
 			ticket = capture::runtime_bind_draw(context, surface);
 #if defined(_WIN32) && defined(CHAMS_HOST_CALLER_PROBE)

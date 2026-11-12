@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <cstdarg>
 #include <cstdio>
+#include <fstream>
+#include <filesystem>
 #include <mutex>
 #include <set>
 #include <string>
@@ -77,5 +79,44 @@ int main(int argc, char **argv) {
  for(auto &x:threads)x.join();
  assert(selected.size()==1143 && *selected.begin()==1 && *selected.rbegin()==7995);
  assert(!policy.observe(9).selected); assert(policy.observe(11).ordinal==1);
+ // D1/D2 diagnostics: exactly once per process, PID/TID present, independent of gates.
+ reshade::log::log_lines.clear();
+ caller_probe::note_gate_entry(); caller_probe::note_gate_entry(); caller_probe::note_gate_entry();
+ caller_probe::note_gate_disabled(); caller_probe::note_gate_disabled();
+ caller_probe::note_begin_draw_failed(); caller_probe::note_begin_draw_failed();
+ assert(reshade::log::log_lines.size()==3);
+ assert(reshade::log::log_lines[0].find("probe-gate entry")!=std::string::npos);
+ assert(reshade::log::log_lines[0].find("pid=4242")!=std::string::npos && reshade::log::log_lines[0].find("tid=777")!=std::string::npos);
+ assert(reshade::log::log_lines[1].find("probe-gate g1: enabled=0")!=std::string::npos);
+ assert(reshade::log::log_lines[1].find("pid=4242")!=std::string::npos && reshade::log::log_lines[1].find("tid=777")!=std::string::npos);
+ assert(reshade::log::log_lines[2].find("probe-gate g2: begin_draw=0")!=std::string::npos);
+ assert(reshade::log::log_lines[2].find("pid=4242")!=std::string::npos && reshade::log::log_lines[2].find("tid=777")!=std::string::npos);
+ // D2: record file is written with the requested paths and open status.
+ std::error_code ec;
+ const auto temp = std::filesystem::temp_directory_path(ec);
+ assert(!ec);
+ const std::string d2 = (temp / "chams-d2-record-test.txt").string();
+ assert(caller_probe::write_log_target_record(d2.c_str(), "C:\\BlueStacks_nxt\\opengl32.dll", "C:\\BlueStacks_nxt\\ReShade.log", true));
+ {
+  std::ifstream in(d2); std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  assert(contents.find("pid=4242")!=std::string::npos && contents.find("tid=777")!=std::string::npos);
+  assert(contents.find("self=\"C:\\BlueStacks_nxt\\opengl32.dll\"")!=std::string::npos);
+  assert(contents.find("log=\"C:\\BlueStacks_nxt\\ReShade.log\"")!=std::string::npos);
+  assert(contents.find("open=1")!=std::string::npos);
+  assert(contents.find('\n')==contents.size()-1); // exactly one line
+ }
+ assert(caller_probe::write_log_target_record(d2.c_str(), "SELF", nullptr, false)); // no log resolved (logging disabled)
+ {
+  std::ifstream in(d2); std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  assert(contents.find("log=\"\"")!=std::string::npos && contents.find("open=0")!=std::string::npos);
+ }
+ assert(caller_probe::write_log_target_record(d2.c_str(), "bad\"path\r\n", "bad\"log\n", true));
+ {
+  std::ifstream in(d2); std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  assert(contents.find('\n')==contents.size()-1); // sanitized: still one line
+  assert(contents.find("bad'path")!=std::string::npos && contents.find('\r')==std::string::npos);
+ }
+ assert(!caller_probe::write_log_target_record((temp / "no-such-dir-xyz" / "x.txt").string().c_str(), "S", "L", true));
+ std::filesystem::remove(d2, ec);
  return 0;
 }

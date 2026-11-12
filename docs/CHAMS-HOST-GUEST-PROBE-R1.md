@@ -120,3 +120,39 @@ swallowed and can never affect rendering. `ReShade.log` is written next to
 fork is installed there; the exact path is printed in the log itself at startup
 and shown in the Chams menu). To check activation, launch BlueStacks, play a
 few seconds, and read the line — no capture is required for this check.
+
+## D1/D2 gate-boundary diagnostics (approved 2026-11-12)
+
+Same gate as the R1-A line: compiled only into the probe build
+(`CHAMS_HOST_CALLER_PROBE`); the default production artifact contains none of
+this. Activation logic, env handling, gates and sampling behavior are
+unchanged; every line below fires at most once per process and swallows its
+own failures.
+
+D1 lines (PID/TID included because one ReShade.log can collect lines from more
+than one HD-Player instance):
+
+- `[CHAMS] probe-gate entry: pid=<n> tid=<n>` — first wrapped GL draw passed
+  hook entry; proves the draw hooks run in this process.
+- `[CHAMS] probe-gate g1: enabled=0 pid=<n> tid=<n>` — `runtime_enabled()`
+  returned false; tracking is not active in this process (never started,
+  start failed, or the menu belongs to a different process than the GL
+  renderer). No `host_caller_sample` records will follow.
+- `[CHAMS] probe-gate g2: begin_draw=0 pid=<n> tid=<n>` — tracking was active
+  but the draw was rejected at the generation/flight gate (stop/start race).
+- The R1-A line above is unchanged and still marks `sample()` entry.
+
+D2 record (`%TEMP%\reshade-log-target.txt`, overwritten on every proxy load):
+
+`time=<yyyy-mm-ddThh:mm:ss> pid=<n> tid=<n> self="<proxy path>" log="<resolved path>" open=<0|1>`
+
+- `open=1` — the log file at `log=` was opened; all ReShade lines for this
+  process (including D1) went there.
+- `open=0` with `log=""` — logging disabled in config or no log path resolved.
+- `open=0` with `log=<path>` — the open failed (e.g. read-only folder or
+  another instance holding ReShade.log); the process falls back to
+  `ReShade.log1..log10` in the same folder or loses logging silently.
+- The record is written even when the ReShade log cannot be opened, which
+  distinguishes "line was never emitted" from "line was emitted into a
+  different sink". It contains no environment contents, config values or user
+  data; embedded quotes/control characters are replaced to keep it one line.

@@ -5,6 +5,7 @@
 
 #include "version.h"
 #include "dll_log.hpp"
+#include "chams_host_caller_probe.hpp" // Probe-build only: contributes nothing in default builds
 #include "ini_file.hpp"
 #include "hook_manager.hpp"
 #include "addon_manager.hpp"
@@ -155,9 +156,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 				}
 			}
 
+			std::filesystem::path log_path;
+			bool log_opened = false; // only used by the probe-build D2 record (chams_host_caller_probe.hpp)
 			if (config.get("INSTALL", "Logging") || (!config.has("INSTALL", "Logging") && !GetEnvironmentVariableW(L"RESHADE_DISABLE_LOGGING", nullptr, 0)))
 			{
-				std::filesystem::path log_path = config.path();
+				log_path = config.path();
 				log_path.replace_extension(L".log");
 
 				std::error_code ec;
@@ -169,7 +172,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 						log_path.replace_extension(L".log" + std::to_wstring(log_index + 1));
 
 						if (reshade::log::open_log_file(log_path, ec))
+						{
+							log_opened = true;
 							break;
+						}
 					}
 
 #ifndef NDEBUG
@@ -177,7 +183,41 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 						reshade::log::message(reshade::log::level::error, "Opening the ReShade log file failed with error code %d.", ec.value());
 #endif
 				}
+				else
+				{
+					log_opened = true;
+				}
 			}
+
+			(void)log_opened; // read only by the probe-build D2 record below
+
+#if defined(_WIN32) && defined(CHAMS_HOST_CALLER_PROBE)
+			// D2 diagnostic (probe builds only): record where this process's ReShade
+			// log went, so a stale or unreadable log is distinguishable from one that
+			// was never written. Independent of the log sink; works when logging is
+			// unavailable. Contains only time/PID/TID/paths/open-status.
+			{
+				wchar_t temp_path[MAX_PATH] = {};
+				const DWORD temp_len = GetTempPathW(MAX_PATH, temp_path);
+				if (temp_len > 0 && temp_len < MAX_PATH)
+				{
+					const auto to_utf8 = [](const std::wstring &w) {
+						if (w.empty()) return std::string();
+						const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+						if (n <= 0) return std::string();
+						std::string out(static_cast<size_t>(n), '\0');
+						WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), out.data(), n, nullptr, nullptr);
+						return out;
+					};
+					const std::string record_utf8 = to_utf8(std::wstring(temp_path) + L"reshade-log-target.txt");
+					const std::string self_utf8 = to_utf8(g_reshade_dll_path.wstring());
+					const std::string log_utf8 = to_utf8(log_path.wstring());
+					if (!record_utf8.empty())
+						reshade::chams::caller_probe::write_log_target_record(record_utf8.c_str(), self_utf8.c_str(),
+							log_utf8.empty() ? nullptr : log_utf8.c_str(), log_opened);
+				}
+			}
+#endif
 
 			reshade::log::message(reshade::log::level::info,
 				"Initializing crosire's ReShade version '" VERSION_STRING_FILE "' "

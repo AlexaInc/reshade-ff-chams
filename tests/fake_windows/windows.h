@@ -9,6 +9,8 @@ using HMODULE = void *;
 using LPCWSTR = const wchar_t *;
 constexpr DWORD GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS = 4;
 constexpr DWORD GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT = 2;
+inline DWORD GetCurrentProcessId() { return 4242; }
+inline DWORD GetCurrentThreadId() { return 777; }
 extern bool fake_enabled;
 inline DWORD GetEnvironmentVariableW(const wchar_t *, wchar_t *out, DWORD cap) {
  if (!fake_enabled || cap < 2) return 0;

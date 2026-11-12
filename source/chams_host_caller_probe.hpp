@@ -16,6 +16,8 @@
 #include <cwchar>
 #include <cstdint>
 #include <cstring>
+#include <cstdio>
+#include <ctime>
 #include <string>
 
 namespace reshade::chams::caller_probe
@@ -27,6 +29,89 @@ namespace reshade::chams::caller_probe
    return GetEnvironmentVariableW(L"CHAMS_HOST_CALLER_PROBE", text, 4) == 1 && text[0] == L'1';
   }();
   return value;
+ }
+ // ---- D1/D2: boundary diagnostics (probe builds only) --------------------
+ // Each D1 line is emitted at most once per process and always carries PID/TID,
+ // because one ReShade.log can collect lines from more than one HD-Player
+ // instance. D1 never reads state that the renderer depends on; failures are
+ // swallowed. D1d (the R1-A sample log) is intentionally unchanged.
+ inline void note_gate_entry() noexcept
+ {
+  static const bool logged = [] {
+   try {
+    reshade::log::message(reshade::log::level::info,
+     "[CHAMS] probe-gate entry: pid=%lu tid=%lu",
+     static_cast<unsigned long>(GetCurrentProcessId()), static_cast<unsigned long>(GetCurrentThreadId()));
+   } catch (...) { }
+   return true;
+  }();
+  (void)logged;
+ }
+ inline void note_gate_disabled() noexcept // called when runtime_enabled() returns false
+ {
+  static const bool logged = [] {
+   try {
+    reshade::log::message(reshade::log::level::info,
+     "[CHAMS] probe-gate g1: enabled=0 pid=%lu tid=%lu",
+     static_cast<unsigned long>(GetCurrentProcessId()), static_cast<unsigned long>(GetCurrentThreadId()));
+   } catch (...) { }
+   return true;
+  }();
+  (void)logged;
+ }
+ inline void note_begin_draw_failed() noexcept // called when runtime_begin_draw() returns false
+ {
+  static const bool logged = [] {
+   try {
+    reshade::log::message(reshade::log::level::info,
+     "[CHAMS] probe-gate g2: begin_draw=0 pid=%lu tid=%lu",
+     static_cast<unsigned long>(GetCurrentProcessId()), static_cast<unsigned long>(GetCurrentThreadId()));
+   } catch (...) { }
+   return true;
+  }();
+  (void)logged;
+ }
+ // D2: record where this process's ReShade log actually went. Written to a
+ // caller-chosen file (production: %TEMP%\reshade-log-target.txt) so it works
+ // even when the normal ReShade log cannot be opened. Output contains only
+ // the timestamp, PID/TID, the proxy path, the resolved log path and the
+ // open result — no environment contents, config values or user data.
+ // Embedded quotes/line breaks in paths are replaced to keep the record one
+ // line and parseable. Returns false on any failure; never throws.
+ inline bool write_log_target_record(const char *file_path, const char *self_path,
+                                     const char *log_path, bool log_opened) noexcept
+ {
+  if (!file_path) return false;
+  auto sanitize = [](const char *in, char *out, size_t out_size) {
+   size_t i = 0;
+   if (in) for (; in[i] && i + 1 < out_size; ++i) {
+    const char c = in[i];
+    out[i] = (c == '"' || c == '\r' || c == '\n' || c == '\t') ? '\'' : c;
+   }
+   out[i] = '\0';
+  };
+  char self[1024] = {}, logp[1024] = {};
+  sanitize(self_path, self, sizeof(self));
+  sanitize(log_path, logp, sizeof(logp));
+  try {
+   std::FILE *f = std::fopen(file_path, "w");
+   if (!f) return false;
+   const std::time_t now = std::time(nullptr);
+   std::tm parts{};
+#if defined(_MSC_VER)
+   if (localtime_s(&parts, &now) != 0) std::memset(&parts, 0, sizeof(parts));
+#else
+   if (const std::tm *lt = std::localtime(&now)) parts = *lt;
+#endif
+   char stamp[32] = {};
+   std::strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%S", &parts);
+   std::fprintf(f, "time=%s pid=%lu tid=%lu self=\"%s\" log=\"%s\" open=%d\n",
+    stamp, static_cast<unsigned long>(GetCurrentProcessId()),
+    static_cast<unsigned long>(GetCurrentThreadId()), self, logp, log_opened ? 1 : 0);
+   const bool ok = std::ferror(f) == 0;
+   std::fclose(f);
+   return ok;
+  } catch (...) { return false; }
  }
  // Do not write paths, unrecognized module names, absolute addresses or stack
  // contents. Known names are fixed literals, not arbitrary process input.
