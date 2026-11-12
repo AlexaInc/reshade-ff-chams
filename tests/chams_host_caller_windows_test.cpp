@@ -3,9 +3,16 @@
 #define CHAMS_HOST_CALLER_PROBE 1
 #include "../source/chams_host_caller_probe.hpp"
 #include <cassert>
+#include <cstdarg>
+#include <cstdio>
 #include <string>
 #include <vector>
 static std::vector<std::string> events;
+// Stub for the once-per-process probe state log line (Option A).
+namespace reshade::log { static int log_calls = 0; static char log_text[512] = {};
+ void message(level, const char *format, ...) { char buffer[512] = {}; va_list args; va_start(args, format);
+  std::vsnprintf(buffer, sizeof(buffer), format, args); va_end(args);
+  if (log_calls == 0) std::snprintf(log_text, sizeof(log_text), "%s", buffer); ++log_calls; } }
 namespace reshade::chams::capture {
  uint64_t runtime_generation() noexcept { return 1; }
  void runtime_inflight_event(uintptr_t c,const char *kind,const std::string &body,uint64_t s) noexcept {
@@ -30,6 +37,12 @@ int main() {
  capture::draw_ticket t{}; t.id=42;
  caller_probe::sample(123,7,t);
  assert(events.size()==1);
+ // Option A: exactly one probe state line per process, with the real gate result.
+ assert(reshade::log::log_calls == 1);
+ assert(std::string(reshade::log::log_text).find("build=R1-A") != std::string::npos);
+ assert(std::string(reshade::log::log_text).find("enabled=1") != std::string::npos);
+ caller_probe::sample(123,7,t);
+ assert(reshade::log::log_calls == 1);
  assert(events[0].find("\"draw_id\":42")!=std::string::npos);
  assert(events[0].find("\"correlation_status\":\"guest_unobserved\"")!=std::string::npos);
  return 0;

@@ -97,3 +97,26 @@ draw-id linkage, the new labels (`reshade_proxy_opengl32.dll`, `opengl32.dll(win
 APIs, CI `build-probe` and default `build`) additionally asserts the handle-comparison
 split (`self` module ⇒ proxy label; `kernel32.dll` keeps its name; `nullptr` ⇒ nullptr).
 A passing test proves mechanics only — never in-game behavior.
+
+## Option A diagnostic log line (approved; R1-A, 2026-11-12)
+
+The probe now logs, **exactly once per process at the first draw that reaches
+`sample()`**, a single ReShade log line:
+
+`[CHAMS] host caller probe: build=R1-A enabled=<1|0>`
+
+- `enabled=1` — `CHAMS_HOST_CALLER_PROBE=1` was visible in the process
+  environment at that moment; the gate is open and draws will be sampled.
+- `enabled=0` — the gate is closed; no `host_caller_sample` records will be
+  emitted (activation issue: wrong process/old instance, missing env var, or
+  env scrubbed by a launcher).
+- `build=R1-A` — identifies the R1 probe artifact with the Option A line.
+
+The line is compiled only when the probe is compiled (`CHAMS_HOST_CALLER_PROBE`
+defined) — **the default production artifact logs nothing**. Activation logic,
+env-var handling and sampling behavior are unchanged; the log failure path is
+swallowed and can never affect rendering. `ReShade.log` is written next to
+`HD-Player.exe` (i.e., in `C:\Program Files\BlueStacks_nxt\ReShade.log` when the
+fork is installed there; the exact path is printed in the log itself at startup
+and shown in the Chams menu). To check activation, launch BlueStacks, play a
+few seconds, and read the line — no capture is required for this check.

@@ -2,6 +2,8 @@
 // GPU, guest events or real renderer/draw correlation are exercised.
 #include <cassert>
 #include <cstdint>
+#include <cstdarg>
+#include <cstdio>
 #include <mutex>
 #include <set>
 #include <string>
@@ -12,6 +14,16 @@
 #define _WIN32 1
 #define CHAMS_HOST_CALLER_PROBE 1
 #include "../source/chams_host_caller_probe.hpp"
+
+// Stub for the once-per-process probe state log line (Option A).
+namespace reshade::log {
+ std::vector<std::string> log_lines;
+ void message(level, const char *format, ...) {
+  char buffer[512] = {}; va_list args; va_start(args, format);
+  std::vsnprintf(buffer, sizeof(buffer), format, args); va_end(args);
+  log_lines.emplace_back(buffer);
+ }
+}
 
 bool fake_enabled = false;
 static uint64_t fake_generation = 1;
@@ -29,10 +41,19 @@ int main(int argc, char **argv) {
  assert(argc==2); fake_enabled = std::string(argv[1])=="on";
  capture::draw_ticket t{}; t.id=42; t.context=3; t.surface=7;
  if (!fake_enabled) {
-  caller_probe::sample(123,7,t); assert(emitted.empty()); return 0;
+  caller_probe::sample(123,7,t); caller_probe::sample(123,7,t);
+  assert(emitted.empty());
+  assert(reshade::log::log_lines.size()==1);
+  assert(reshade::log::log_lines[0].find("build=R1-A")!=std::string::npos);
+  assert(reshade::log::log_lines[0].find("enabled=0")!=std::string::npos);
+  return 0;
  }
  t.id=0; caller_probe::sample(123,7,t); assert(emitted.empty()); t.id=42;
  caller_probe::sample(123,7,t); assert(emitted.size()==1);
+ // Option A: the probe state line is logged exactly once, with the real gate result.
+ assert(reshade::log::log_lines.size()==1);
+ assert(reshade::log::log_lines[0].find("build=R1-A")!=std::string::npos);
+ assert(reshade::log::log_lines[0].find("enabled=1")!=std::string::npos);
  auto &s=emitted[0];
  assert(s.find("\"draw_id\":42")!=s.npos && s.find("\"correlation_status\":\"guest_unobserved\"")!=s.npos);
  assert(s.find("\"returned_frames\":6")!=s.npos);
@@ -47,6 +68,7 @@ int main(int argc, char **argv) {
  assert(emitted.size()==128 && losses==0);
  fake_generation=2; caller_probe::sample(123,7,t); assert(emitted.size()==129);
  fake_generation=1; caller_probe::sample(123,7,t); assert(emitted.size()==129); // stale session
+ assert(reshade::log::log_lines.size()==1); // still exactly one log line per process
  caller_probe::sampler policy(7,10000); std::mutex guard; std::set<uint64_t> selected;
  std::vector<std::thread> threads;
  for(int k=0;k<8;k++) threads.emplace_back([&]{

@@ -11,6 +11,7 @@
 #if defined(_WIN32) && defined(CHAMS_HOST_CALLER_PROBE)
 #include "chams_caller_sampling.hpp"
 #include "chams_capture.hpp"
+#include "dll_log.hpp"
 #include <windows.h>
 #include <cwchar>
 #include <cstdint>
@@ -77,6 +78,18 @@ namespace reshade::chams::caller_probe
  }
  inline void sample(uintptr_t native_context, uint64_t surface, const capture::draw_ticket &ticket) noexcept
  {
+  // Option A diagnostic (approved): log the probe build identifier and the
+  // actual enabled() result exactly once per process, at the first draw that
+  // reaches the probe. Activation and sampling behavior are unchanged; any
+  // log failure is swallowed and can never affect rendering.
+  static const bool probe_state_logged = [] {
+   try {
+    reshade::log::message(reshade::log::level::info,
+     "[CHAMS] host caller probe: build=R1-A enabled=%d", enabled() ? 1 : 0);
+   } catch (...) { /* diagnostic must not terminate the renderer */ }
+   return true;
+  }();
+  (void)probe_state_logged;
   if (!ticket.id || !enabled()) return;
   try {
    static sampler policy(512, 128);
