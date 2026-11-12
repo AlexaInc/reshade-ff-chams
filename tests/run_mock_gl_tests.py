@@ -116,14 +116,20 @@ int main(int argc, char **argv) {
  auto st=save_state(); float col[3]={1,0,0}; wire_pass(GL_LESS,col,.5f,7.0f,[]{});restore_state(st);
  assert(ints==original_i);assert(floats==original_f);assert(enabled==original_e);
  own()=own_track{}; for(int i=0;i<30;i++){own().frame_min=2.17f;update_own_estimate();} assert(own().stable==30);assert(own().own_est>2.16f&&own().own_est<2.18f);
- update_own_estimate(); assert(own().own_est<0 && own().stable==0);
+ // R1 (Stage 1 stale grace): a single zero-observation frame suspends exclusion but keeps a valid estimate.
+ update_own_estimate(); assert(own().own_est>0 && own().stable==30 && own().stale_frames==1);
+ own().frame_min=2.17f; update_own_estimate(); assert(own().own_est>0 && own().stable==31 && own().stale_frames==0);
+ // 31 consecutive zero-observation frames forget for good (spectate safety).
+ own()=own_track{}; for(int i=0;i<30;i++){own().frame_min=2.17f;update_own_estimate();}
+ for(int i=0;i<31;i++){update_own_estimate();}
+ assert(own().own_est<0 && own().stable==0 && own().stale_frames==0);
  own()=own_track{}; for(int i=0;i<29;i++){own().frame_min=2.17f;update_own_estimate();}
  // A single sub-1.5m sample is the observed gun-switch/ADS bone-swing signature:
  // the update is skipped and the in-progress sequence (stable==29) survives.
  own().frame_min=1.0f; update_own_estimate(); assert(own().stable==29 && own().own_est<0 && own().cand>0);
  own().frame_min=2.17f;update_own_estimate();assert(own().stable==30 && own().own_est>0);
  for(int i=1;i<30;i++){own().frame_min=2.17f;update_own_estimate();}
- assert(own().own_est>0);own().frame_min=8.0f;update_own_estimate();assert(own().own_est<0 && own().stable==0);
+ assert(own().own_est>0);own().frame_min=8.0f;update_own_estimate();assert(own().own_est>0 && own().stable>0 && own().stale_frames==1);
  pcache().count=0;g_settings.detect_mode=0;assert(!program_is_character(123));
  g_settings.detect_mode=1;assert(program_is_character(123));
  g_settings.detect_mode=0;assert(!program_is_character(123));
@@ -244,7 +250,7 @@ int main(int argc, char **argv) {
  // The far control is observed at 6742/6743 but not demonstrated to be an
  // enemy, and its third interval is synthetic. No nearby-enemy proof.
  assert(!e0 && !e1 && !e2);
- pending("flicker candidate consistently excluded through tracker interruption",b0 && b1 && b2);
+ pending("flicker candidate consistently excluded through tracker interruption (R1: exclusion suspended, estimate retained)",b0 && b1 && b2);
  // Session 000011, seq 41094/41127: two temporally adjacent candidate
  // body/part draws have different decisions even with the same stable tracker.
  // The capture does not prove those draw origins share ownership.
@@ -263,8 +269,10 @@ int main(int argc, char **argv) {
  const bool part_before=own_distance_excludes(c11_settings,c11_info,@C11_PART@,own());
  ++g_frame_id; touch_frame();
  const bool part_after=own_distance_excludes(c11_settings,c11_info,@C11_AFTER_PART@,own());
- assert(part_before && !part_after && own().own_est<0 && own().stable==0);
- pending("capture11 unrelated present does not interrupt ownership",part_before && part_after);
+ // R1: the unrelated-present no-observation frame no longer wipes the estimate;
+ // exclusion is suspended (stale_frames>0) instead of being forgotten.
+ assert(part_before && !part_after && own().own_est>0 && own().stable==56 && own().stale_frames==1);
+ pending("capture11 unrelated present does not interrupt ownership (R1: exclusion suspended, estimate retained)",part_before && part_after);
  // Full captured body visible -> hidden -> visible, including the exact
  // unrelated present split within one observed clear-to-clear sequence.
  g_opengl_context=reinterpret_cast<void *>(0x6001);g_frame_id=3406;touch_frame();
@@ -325,9 +333,12 @@ int main(int argc, char **argv) {
  }
  assert(own().own_est>0 && own().stable>=75 && std::fabs(own().own_est-3.038f)<0.05f);
  assert(!own_distance_excludes(d3_settings,d3_info,3.674f,own()));
- // A genuine zero-character frame still forgets the estimate (death/spectate safety).
+ // R1: a brief zero-character frame suspends exclusion but keeps a valid estimate.
  ++g_frame_id;touch_frame();
- assert(own().own_est<0 && own().stable==0);
+ assert(own().own_est>0 && own().stable>=75 && own().stale_frames==1);
+ // ... while 31 consecutive zero-observation frames forget for good (death/spectate safety).
+ for(int i=0;i<30;i++){++g_frame_id;touch_frame();}
+ assert(own().own_est<0 && own().stable==0 && own().stale_frames==0);
  // Spread-out origins with no cluster learn nothing and never acquire.
  own()=own_track{};
  for(int i=0;i<30;i++){
@@ -372,7 +383,11 @@ int main(int argc, char **argv) {
    ++g_frame_id;touch_frame();
  }
  assert(std::fabs(own().own_est-est_before)<0.05f && own().stable>=33 && std::fabs(own().own_est-3.038f)<0.05f);
- assert(own_distance_excludes(sg,sg_info,3.037654f,own()));
+ // R1: exclusion is suspended during the zero-observation streak; a corroborated frame re-arms it.
+ assert(own().stale_frames==6 && !own_distance_excludes(sg,sg_info,3.037654f,own()));
+ for(float r : sg_roots) note_character_distance(r);
+ ++g_frame_id;touch_frame();
+ assert(own().stale_frames==0 && own_distance_excludes(sg,sg_info,3.037654f,own()));
  // Cold start: a sparse lone far sample still bootstraps the candidate (legacy behaviour kept).
  own()=own_track{};++g_frame_id;note_character_distance(4.6f);touch_frame();
  assert(own().cand>0 && own().stable==1 && own().own_est<0);
@@ -388,7 +403,68 @@ int main(int argc, char **argv) {
  for(int i=0;i<30;i++){ for(float r : sg_roots) note_character_distance(r); ++g_frame_id;touch_frame(); }
  assert(own().own_est>0 && own().stable>=30);
  assert(!own_distance_excludes(sg,sg_info,3.674f,own()));
+ // ===== sr_* regression block (Stage 1: R1 stale grace, R2 modal corroboration, R3 cold-start modal anchoring) =====
+ g_opengl_context=reinterpret_cast<void *>(0x7200);g_frame_id=5000;touch_frame();
+ own()=own_track{};
+ settings sr{};sr.hide_own=true;sr.own_distance=5.5f;
+ program_info sr_info{};sr_info.dist_source="_WorldSpaceCameraPos";
+ const float sr_roots[9]={3.037654f,3.037654f,3.037654f,3.037654f,3.037654f,3.037654f,3.037652f,3.037654f,3.037654f};
+ // sr_r3_coldstart_modal_seed: with no established reference the multipart modal (>=3 votes) anchors the candidate.
+ for(float r : {3.71f,3.71f,3.71f,2.10f,2.10f}) note_character_distance(r);
+ ++g_frame_id;touch_frame();
+ assert(own().cand>3.7f && own().cand<3.72f && own().stable==1 && own().stale_frames==0);
+ std::printf("sr_r3_coldstart_modal_seed: pass\n");
+ // sr_stale_grace_suspends_exclusion / sr_stale_rearm_next_corroborated_frame: acquire, suspend, re-arm.
+ own()=own_track{};
+ for(int i=0;i<31;i++){ for(float r : sr_roots) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ assert(own().own_est>0 && own().stable==31);
+ const float sr_est=own().own_est;
+ ++g_frame_id;touch_frame(); // zero-observation frame
+ assert(own().own_est==sr_est && own().stable==31 && own().stale_frames==1);
+ assert(!own_distance_excludes(sr,sr_info,3.037654f,own()));   // hiding suspended while stale
+ std::printf("sr_stale_grace_suspends_exclusion: pass\n");
+ for(float r : sr_roots) note_character_distance(r);
+ ++g_frame_id;touch_frame();
+ assert(own().stale_frames==0 && own().stable==32);
+ assert(own_distance_excludes(sr,sr_info,3.037654f,own()));    // re-armed on the very next corroborated frame
+ std::printf("sr_stale_rearm_next_corroborated_frame: pass\n");
+ // sr_stale_boundary_30_frames_retained / sr_stale_hard_wipe_at_31: hard-wipe boundary.
+ own()=own_track{};
+ for(int i=0;i<31;i++){ for(float r : sr_roots) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ const float sr_est2=own().own_est;
+ for(int i=0;i<30;i++){++g_frame_id;touch_frame();}
+ assert(own().own_est==sr_est2 && own().stale_frames==30);     // boundary: exactly 30 consecutive stale frames still retain
+ std::printf("sr_stale_boundary_30_frames_retained: pass\n");
+ ++g_frame_id;touch_frame();                                    // 31st consecutive stale frame
+ assert(own().own_est<0 && own().stable==0 && own().stale_frames==0);
+ std::printf("sr_stale_hard_wipe_at_31: pass\n");
+ // sr_r2_foreign_modal_rejected: an established tracker refuses a foreign multi-vote majority (post-capture rebase bug).
+ own()=own_track{};
+ for(int i=0;i<31;i++){ for(float r : sr_roots) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ const float sr_est3=own().own_est;const int sr_stable3=own().stable;
+ ++g_frame_id;
+ for(int i=0;i<6;i++) note_character_distance(2.20f);  // enemy cluster, 6 votes, no own parts present
+ note_character_distance(2.45f);                        // lone bone origin, no cluster
+ touch_frame();
+ assert(own().own_est==sr_est3 && own().stable==sr_stable3 && own().stale_frames==1);
+ assert(!own_distance_excludes(sr,sr_info,3.037654f,own()));   // own draw must not disappear into the enemy modal
+ assert(!own_distance_excludes(sr,sr_info,2.20f,own()));       // the foreign distance itself is never excluded (it is not the own model)
+ std::printf("sr_r2_foreign_modal_rejected: pass\n");
+ // sr_r2_foreign_streak_hard_wipe: 31 consecutive foreign-majority frames finally forget (no infinite foreign trust).
+ own()=own_track{};
+ for(int i=0;i<31;i++){ for(float r : sr_roots) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ for(int i=0;i<31;i++){++g_frame_id; for(int k=0;k<6;k++) note_character_distance(2.20f); touch_frame();}
+ assert(own().own_est<0 && own().stable==0);
+ std::printf("sr_r2_foreign_streak_hard_wipe: pass\n");
+ // sr_r2_near_reference_cluster_learned: a cluster inside the 0.3m band is still accepted (not over-gated).
+ own()=own_track{};
+ for(int i=0;i<31;i++){ for(float r : sr_roots) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ for(float r : sr_roots) note_character_distance(3.30f);  // modal 0.26m away from the reference (<0.3m)
+ ++g_frame_id;touch_frame();
+ assert(own().stale_frames==0 && own().stable==32);
+ std::printf("sr_r2_near_reference_cluster_learned: pass\n");
  g_opengl_context=nullptr;own()=own_track{};pcache().count=0;icache().count=0;
+ // ===== end sr_* block =====
  // If a declared camera uniform has zero data, name the actual matrix fallback.
  p.view.plain=0;p.view_m[0]=p.view_m[5]=p.view_m[10]=1;p.view_m[12]=-2;
  p.loc_cam_pos=0;p.world[12]=5;assert(object_distance(p)==3);

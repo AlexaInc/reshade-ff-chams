@@ -175,7 +175,14 @@ namespace reshade::chams
 		float cand      = -1.0f;  // candidate distance being confirmed
 		float own_est   = -1.0f;  // learned distance of my own model (-1 = unknown)
 		int   stable    = 0;      // consecutive frames the candidate held
+		// Consecutive frames with no corroborated observation. A temporary
+		// zero-observation frame (own avatar culled) must not destroy a valid
+		// estimate: hide suspends (stale_frames > 0) and the very next
+		// corroborated frame re-arms it. Only a streak longer than
+		// kStaleFrameLimit (30, i.e. ~0.5 s) forgets for good (spectate safety).
+		int   stale_frames = 0;
 	};
+	constexpr int kStaleFrameLimit = 30;
 	inline own_track &own() { static thread_local own_track o; return o; }
 
 	// Record one comparable character-draw distance for this frame. O(1),
@@ -195,7 +202,7 @@ namespace reshade::chams
 	inline bool own_distance_excludes(const settings &s, const program_info &p, float distance, const own_track &o)
 	{
 		return s.hide_own && std::strcmp(p.dist_source, "MATRIX_VP") != 0 && distance >= 0.0f &&
-			o.own_est > 0.0f && o.stable >= 30 && distance < s.own_distance &&
+			o.own_est > 0.0f && o.stable >= 30 && o.stale_frames == 0 && distance < s.own_distance &&
 			std::fabs(distance - o.own_est) <= 0.2f;
 	}
 
@@ -274,6 +281,16 @@ namespace reshade::chams
 			}
 			if (best_votes >= 3)
 			{
+				// R2 (established-reference corroboration): a foreign multi-vote
+				// majority that disagrees with an established candidate/estimate is
+				// an enemy cluster, not the own model. Learning it rebased the
+				// tracker to a nearby enemy (post-fix capture: candidate_changed
+				// at 2.43m / 2.15m / 2.40m). Skip the frame instead of absorbing it.
+				if (reference > 0.0f && std::fabs(best_modal - reference) > 0.3f)
+				{
+					*skip = true;
+					return -1.0f;
+				}
 				*votes_out = best_votes;
 				return best_modal;          // persistent root cluster
 			}
@@ -326,17 +343,29 @@ namespace reshade::chams
 			// still a heuristic and cannot establish player ownership.
 			if (o.stable >= 30)
 				o.own_est = o.cand;
+			o.stale_frames = 0;
 		}
-		else if (wipe)
+		else
 		{
-			// No plausible character draw this frame -> forget the estimate so a
-			// nearby enemy in the next frame does not get treated as "mine".
-			o.cand    = -1.0f;
-			o.stable  = 0;
-			o.own_est = -1.0f;
+			// R1 (stale grace): a frame that teaches nothing (wipe) or cannot
+			// corroborate the reference (skip) suspends exclusion and extends
+			// the stale streak. A brief own-avatar cull must not destroy a valid
+			// estimate — the very next corroborated frame re-arms hiding. Only
+			// kStaleFrameLimit+1 consecutive such frames forget for good.
+			const bool had_reference = o.own_est > 0.0f || o.cand > 0.0f;
+			o.stale_frames += 1;
+			if (!had_reference || o.stale_frames > kStaleFrameLimit)
+			{
+				o.cand    = -1.0f;
+				o.stable  = 0;
+				o.own_est = -1.0f;
+				o.stale_frames = 0;
+			}
+			// else: keep candidate/estimate/stability; hiding is suspended while
+			// stale_frames > 0 (see own_distance_excludes).
 		}
-		// skip: a near-camera transient or an ambiguous frame was observed;
-		// keep the estimate, candidate and stability untouched.
+		// skip: a near-camera transient, an uncorroborated or an ambiguous
+		// frame was observed; candidate/estimate/stability survive (stale path).
 		if (tracking) {
 			const char *reason = skip ? "outlier_skipped" :
 				wipe ? ((before.frame_min >= 1e8f && before.frame_obs_n == 0) ? "no_observation" : "out_of_range") :
@@ -346,6 +375,7 @@ namespace reshade::chams
 				",\"frame_min\":" + capture::json_number(before.frame_min) + ",\"before_candidate\":" + capture::json_number(before.cand) +
 				",\"before_estimate\":" + capture::json_number(before.own_est) + ",\"before_stable\":" + std::to_string(before.stable) +
 				",\"candidate\":" + capture::json_number(o.cand) + ",\"estimate\":" + capture::json_number(o.own_est) + ",\"stable\":" + std::to_string(o.stable) +
+				",\"stale_frames\":" + std::to_string(o.stale_frames) +
 				",\"mode\":" + capture::json_number(skip || wipe ? -1.0f : observation) +
 				",\"mode_votes\":" + std::to_string(skip || wipe ? 0 : mode_votes);
 				capture::runtime_inflight_event(capture::native_context(), "own_tracker", line,
