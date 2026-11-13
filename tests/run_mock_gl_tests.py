@@ -130,13 +130,13 @@ int main(int argc, char **argv) {
  auto st=save_state(); float col[3]={1,0,0}; wire_pass(GL_LESS,col,.5f,7.0f,[]{});restore_state(st);
  assert(ints==original_i);assert(floats==original_f);assert(enabled==original_e);
  own()=own_track{}; for(int i=0;i<30;i++){own().frame_min=2.17f;update_own_estimate();} assert(own().stable==30);assert(own().own_est>2.16f&&own().own_est<2.18f);
- // R1 (Stage 1 stale grace): a single zero-observation frame suspends exclusion but keeps a valid estimate.
- update_own_estimate(); assert(own().own_est>0 && own().stable==30 && own().stale_frames==1);
- own().frame_min=2.17f; update_own_estimate(); assert(own().own_est>0 && own().stable==31 && own().stale_frames==0);
+ // R1/Stage 4: a zero-observation frame is no information — estimate kept, hiding NOT suspended (no one-frame chams flash).
+ update_own_estimate(); assert(own().own_est>0 && own().stable==30 && own().stale_frames==0 && own().no_info_streak==1);
+ own().frame_min=2.17f; update_own_estimate(); assert(own().own_est>0 && own().stable==31 && own().stale_frames==0 && own().no_info_streak==0);
  // 31 consecutive zero-observation frames forget for good (spectate safety).
  own()=own_track{}; for(int i=0;i<30;i++){own().frame_min=2.17f;update_own_estimate();}
  for(int i=0;i<31;i++){update_own_estimate();}
- assert(own().own_est<0 && own().stable==0 && own().stale_frames==0);
+ assert(own().own_est<0 && own().stable==0 && own().stale_frames==0 && own().no_info_streak==0);
  own()=own_track{}; for(int i=0;i<29;i++){own().frame_min=2.17f;update_own_estimate();}
  // A single sub-1.5m sample is the observed gun-switch/ADS bone-swing signature:
  // the update is skipped and the in-progress sequence (stable==29) survives.
@@ -277,11 +277,11 @@ int main(int argc, char **argv) {
  own().frame_min=1e9f;++g_frame_id;touch_frame();
  const bool b2=own_distance_excludes(flicker_settings,flicker_program,@FL_BODY@,own());
  const bool e2=own_distance_excludes(flicker_settings,flicker_program,@FL_CONTROL@,own());
- std::printf("Flicker tracker replay matches captured candidate decision pattern: %s\n",(!b0 && b1 && !b2) ? "yes (bug reproduced)" : "no (behavior changed)");
+ std::printf("Flicker tracker replay matches captured candidate decision pattern: %s\n",(!b0 && b1 && b2) ? "no (Stage 4: empty frame retains exclusion — bug fixed)" : "yes (bug reproduced)");
  // The far control is observed at 6742/6743 but not demonstrated to be an
  // enemy, and its third interval is synthetic. No nearby-enemy proof.
  assert(!e0 && !e1 && !e2);
- pending("flicker candidate consistently excluded through tracker interruption (R1: exclusion suspended, estimate retained)",b0 && b1 && b2);
+ pending("flicker candidate consistently excluded through tracker interruption (Stage 4: estimate retained, exclusion kept across the empty frame; cold-start draw still unexcluded)",b1 && b2);
  // Session 000011, seq 41094/41127: two temporally adjacent candidate
  // body/part draws have different decisions even with the same stable tracker.
  // The capture does not prove those draw origins share ownership.
@@ -300,10 +300,9 @@ int main(int argc, char **argv) {
  const bool part_before=own_distance_excludes(c11_settings,c11_info,@C11_PART@,own());
  ++g_frame_id; touch_frame();
  const bool part_after=own_distance_excludes(c11_settings,c11_info,@C11_AFTER_PART@,own());
- // R1: the unrelated-present no-observation frame no longer wipes the estimate;
- // exclusion is suspended (stale_frames>0) instead of being forgotten.
- assert(part_before && !part_after && own().own_est>0 && own().stable==56 && own().stale_frames==1);
- pending("capture11 unrelated present does not interrupt ownership (R1: exclusion suspended, estimate retained)",part_before && part_after);
+ // Stage 4: the unrelated-present frame carries no information; the estimate is kept and exclusion REMAINS ARMED (no one-frame chams flash).
+ assert(part_before && part_after && own().own_est>0 && own().stable==56 && own().stale_frames==0);
+ pending("capture11 unrelated present does not interrupt ownership (Stage 4: exclusion stays armed)",part_before && part_after);
  // Full captured body visible -> hidden -> visible, including the exact
  // unrelated present split within one observed clear-to-clear sequence.
  g_opengl_context=reinterpret_cast<void *>(0x6001);g_frame_id=3406;touch_frame();
@@ -313,9 +312,10 @@ int main(int argc, char **argv) {
  own().own_est=@C11_BODY_RESET@;own().cand=@C11_BODY_RESET@;own().stable=32;own().frame_min=1e9f;
  ++g_frame_id;touch_frame();
  const bool body_reset=own_distance_excludes(c11_settings,c11_info,@C11_BODY_RESET_DIST@,own());
- assert(!body_initial && body_acquired && !body_reset);
- std::printf("capture11 exact body direct -> hide_own -> direct reproduced\n");
- pending("capture11 body remains excluded across unrelated present",body_initial && body_acquired && body_reset);
+ // Stage 4: the intervening empty frame carries no information; exclusion REMAINS ARMED (no one-frame chams flash).
+ assert(!body_initial && body_acquired && body_reset);
+ std::printf("capture11 exact body sequence reproduced (empty frame no longer suspends exclusion)\n");
+ pending("capture11 body remains excluded across unrelated present (Stage 4: empty frame retains exclusion)",body_acquired && body_reset);
  // Synthetic same-distance control exposes the identity ambiguity. It is NOT
  // an observed nearby enemy; traces contain no enemy ownership labels.
  own_track equal_state{};equal_state.own_est=@C11_DRAW_EST@;equal_state.stable=55;
@@ -422,9 +422,9 @@ int main(int argc, char **argv) {
  }
  assert(own().own_est>0 && own().stable>=75 && std::fabs(own().own_est-3.038f)<0.05f);
  assert(!own_distance_excludes(d3_settings,d3_info,3.674f,own()));
- // R1: a brief zero-character frame suspends exclusion but keeps a valid estimate.
+ // Stage 4: a brief zero-character frame keeps a valid estimate and exclusion armed.
  ++g_frame_id;touch_frame();
- assert(own().own_est>0 && own().stable>=75 && own().stale_frames==1);
+ assert(own().own_est>0 && own().stable>=75 && own().stale_frames==0);
  // ... while 31 consecutive zero-observation frames forget for good (death/spectate safety).
  for(int i=0;i<30;i++){++g_frame_id;touch_frame();}
  assert(own().own_est<0 && own().stable==0 && own().stale_frames==0);
@@ -509,24 +509,24 @@ int main(int argc, char **argv) {
  assert(own().own_est>0 && own().stable==31);
  const float sr_est=own().own_est;
  ++g_frame_id;touch_frame(); // zero-observation frame
- assert(own().own_est==sr_est && own().stable==31 && own().stale_frames==1);
- assert(!own_distance_excludes(sr,sr_info,3.037654f,own()));   // hiding suspended while stale
- std::printf("sr_stale_grace_suspends_exclusion: pass\n");
+ assert(own().own_est==sr_est && own().stable==31 && own().stale_frames==0 && own().no_info_streak==1);
+ assert(own_distance_excludes(sr,sr_info,3.037654f,own()));    // Stage 4: hiding NOT suspended by a zero-observation frame
+ std::printf("sr_zero_obs_keeps_exclusion_armed: pass\n");
  for(float r : sr_roots) note_character_distance(r);
  ++g_frame_id;touch_frame();
- assert(own().stale_frames==0 && own().stable==32);
- assert(own_distance_excludes(sr,sr_info,3.037654f,own()));    // re-armed on the very next corroborated frame
- std::printf("sr_stale_rearm_next_corroborated_frame: pass\n");
+ assert(own().stale_frames==0 && own().stable==32 && own().no_info_streak==0);
+ assert(own_distance_excludes(sr,sr_info,3.037654f,own()));    // still armed (isolation); corroborated frame relearns as before
+ std::printf("sr_rearm_next_corroborated_frame: pass\n");
  // sr_stale_boundary_30_frames_retained / sr_stale_hard_wipe_at_31: hard-wipe boundary.
  own()=own_track{};
  for(int i=0;i<31;i++){ for(float r : sr_roots) note_character_distance(r); ++g_frame_id;touch_frame(); }
  const float sr_est2=own().own_est;
  for(int i=0;i<30;i++){++g_frame_id;touch_frame();}
- assert(own().own_est==sr_est2 && own().stale_frames==30);     // boundary: exactly 30 consecutive stale frames still retain
- std::printf("sr_stale_boundary_30_frames_retained: pass\n");
- ++g_frame_id;touch_frame();                                    // 31st consecutive stale frame
- assert(own().own_est<0 && own().stable==0 && own().stale_frames==0);
- std::printf("sr_stale_hard_wipe_at_31: pass\n");
+ assert(own().own_est==sr_est2 && own().stale_frames==0 && own().no_info_streak==30);  // boundary: exactly 30 uncorroborated frames still retain
+ std::printf("sr_boundary_30_frames_retained: pass\n");
+ ++g_frame_id;touch_frame();                                    // 31st consecutive uncorroborated frame
+ assert(own().own_est<0 && own().stable==0 && own().stale_frames==0 && own().no_info_streak==0);
+ std::printf("sr_hard_wipe_at_31: pass\n");
  // sr_r2_foreign_modal_rejected: an established tracker refuses a foreign multi-vote majority (post-capture rebase bug).
  own()=own_track{};
  for(int i=0;i<31;i++){ for(float r : sr_roots) note_character_distance(r); ++g_frame_id;touch_frame(); }
@@ -566,6 +566,58 @@ int main(int argc, char **argv) {
  assert(own().stale_frames==0 && own().stable==32);
  std::printf("sr_r2_near_reference_cluster_learned: pass\n");
  g_opengl_context=nullptr;own()=own_track{};pcache().count=0;icache().count=0;
+ // ===== sr_zero_obs_* block (Stage 4: zero-observation frames are no information —
+ //       the brief low-frequency own-avatar chams flash fix. Reproduces the exact
+ //       failure pattern measured in the 2026-11-13 captures: an isolated frame with
+ //       zero comparable draws used to suspend hiding for the following frame,
+ //       flipping the whole avatar (root and fork) into the chams passes for one
+ //       frame; both appear as a sporadic full-body flash.) =====
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x7400);g_frame_id=6000;touch_frame();
+   own()=own_track{};
+   settings zo{};zo.hide_own=true;zo.own_distance=5.5f;
+   program_info zo_info{};zo_info.dist_source="_WorldSpaceCameraPos";
+   const float zo_roots[9]={3.037654f,3.037654f,3.037654f,3.037654f,3.037654f,3.037654f,3.037652f,3.037654f,3.037654f};
+   for(int i=0;i<31;i++){ for(float r : zo_roots) note_character_distance(r); ++g_frame_id;touch_frame(); }
+   assert(own().own_est>0 && own().stable==31);
+   const float zo_est=own().own_est;
+   // sr_zero_obs_keeps_exclusion_armed_next_frame:
+   // one isolated zero-observation frame keeps the estimate, and the very next frame's exclusion IS ARMED (the old code suspended it).
+   ++g_frame_id;touch_frame();
+   assert(own().own_est==zo_est && own().stable==31 && own().stale_frames==0 && own().no_info_streak==1);
+   assert(own_distance_excludes(zo,zo_info,3.037654f,own()));
+   for(float r : zo_roots) note_character_distance(r); ++g_frame_id;touch_frame();
+   assert(own().own_est==zo_est && own().stable==32 && own().no_info_streak==0);
+   std::printf("sr_zero_obs_keeps_exclusion_armed_next_frame: pass\n");
+   // sr_zero_obs_fork_eligible: F1 stays eligible across a zero-observation frame (binding not disturbed, no absence accrues).
+   ++g_frame_id;touch_frame();
+   assert(own_fork_eligible(zo,own()));
+   std::printf("sr_zero_obs_fork_eligible: pass\n");
+   for(float r : zo_roots) note_character_distance(r); ++g_frame_id;touch_frame();  // corroborated frame: backstop cleared
+   assert(own().no_info_streak==0);
+   // sr_zero_obs_30_frames_retained / sr_zero_obs_31st_forgets_backstop:
+   // the combined uncorroborated backstop preserves the legacy forget boundary (death/spectate safety).
+   for(int i=0;i<30;i++){++g_frame_id;touch_frame();}
+   assert(own().own_est==zo_est && own().stale_frames==0 && own().no_info_streak==30);
+   ++g_frame_id;touch_frame();                                               // 31st consecutive uncorroborated frame
+   assert(own().own_est<0 && own().stable==0 && own().no_info_streak==0);
+   // re-acquire; verify alternating contradiction+no-information forgets at the same combined boundary
+   own()=own_track{};
+   for(int i=0;i<31;i++){ for(float r : zo_roots) note_character_distance(r); ++g_frame_id;touch_frame(); }
+   for(int i=0;i<15;i++){ ++g_frame_id; for(int k=0;k<6;k++) note_character_distance(i%2==0?2.20f:4.30f); touch_frame();  // foreign modal (alternating) -> skip, stale
+                          ++g_frame_id; touch_frame(); }                                              // zero-observation frame
+   assert(own().own_est>0.0f && own().no_info_streak==30 && own().stale_frames==15);   // 15 skips + 15 zero-obs: retained one frame short of the boundary
+   ++g_frame_id;touch_frame();                                               // 31st uncorroborated frame
+   assert(own().own_est<0 && own().stable==0);
+   std::printf("sr_zero_obs_mixed_backstop_forgets_at_31: pass\n");
+   // sr_contradictory_skip_still_suspends: frames with contradictory evidence keep R1 semantics (hiding suspended).
+   own()=own_track{};
+   for(int i=0;i<31;i++){ for(float r : zo_roots) note_character_distance(r); ++g_frame_id;touch_frame(); }
+   ++g_frame_id; for(int k=0;k<6;k++) note_character_distance(2.20f); touch_frame();   // single frame foreign modal (no streak yet) -> skip
+   assert(own().stale_frames==1 && !own_distance_excludes(zo,zo_info,3.037654f,own()));
+   std::printf("sr_contradictory_skip_still_suspends: pass\n");
+   g_opengl_context=nullptr;own()=own_track{};
+ }
  // ===== sr_fork_* block (Stage 2 F1: own-fork fingerprint binding) =====
  // The own attachment fork is the accessory draw with a dedicated fingerprint
  // seen inside the root draw span. These tests pin F1's binding, rejection,
@@ -630,8 +682,8 @@ int main(int argc, char **argv) {
    srf_frame();
    assert(own().stale_frames==1);                      // R1: estimate retained, hiding suspended
    assert(!own_fork_note_draw(srf,srf_p,1.90f,own(),284,864,0));   // stale frame: F1 inert, fork visible
-   srf_frame();                                        // nothing observed -> stale=2, still retained
-   assert(own().stale_frames==2);
+   srf_frame();                                        // nothing observed -> combined backstop=2; suspension streak kept at 1 (Stage 4)
+   assert(own().stale_frames==1 && own().no_info_streak==2);
    // A corroborated frame re-arms hiding on the very next frame.
    own().stale_frames=0;
    for(int k=0;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);

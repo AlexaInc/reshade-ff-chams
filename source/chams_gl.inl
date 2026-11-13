@@ -196,6 +196,15 @@ namespace reshade::chams
 		// than the post-forget reacquire that already happens today.
 		float rebase_modal  = -1.0f;
 		int   rebase_streak = 0;
+		// Stage 4: combined uncorroborated-frame backstop (zero-sample frames
+		// plus skip/wipe frames alike). A frame with ZERO comparable draws is
+		// no information, not contradictory evidence, so it must not suspend
+		// hiding (that produced a one-frame own-avatar chams flash after every
+		// unrelated no-character frame); it still counts toward this backstop
+		// so an unbroken uncorroborated streak forgets at the same
+		// kStaleFrameLimit boundary as before (spectate/death safety, and the
+		// bound is identical to the legacy stale_frames bound in all cases).
+		int   no_info_streak = 0;
 	};
 	constexpr int kStaleFrameLimit = 30;
 	constexpr int kDisplacedClusterFrames = 12;  // consecutive persistent displaced modal frames before the tracker re-anchors
@@ -661,6 +670,7 @@ namespace reshade::chams
 			o.cand = observation;
 			o.own_est = observation;
 			o.stale_frames = 0;
+			o.no_info_streak = 0;
 			o.rebase_modal = -1.0f;
 			o.rebase_streak = 0;
 		}
@@ -684,22 +694,42 @@ namespace reshade::chams
 			if (o.stable >= 30)
 				o.own_est = o.cand;
 			o.stale_frames = 0;
+			o.no_info_streak = 0;
 		}
 		else
 		{
-			// R1 (stale grace): a frame that teaches nothing (wipe) or cannot
-			// corroborate the reference (skip) suspends exclusion and extends
-			// the stale streak. A brief own-avatar cull must not destroy a valid
-			// estimate — the very next corroborated frame re-arms hiding. Only
-			// kStaleFrameLimit+1 consecutive such frames forget for good.
+			// R1 (stale grace): a frame that cannot corroborate the reference
+			// (skip) or saw contradictory samples (out_of_range wipe) suspends
+			// exclusion and extends the stale streak — a brief own-avatar cull
+			// must not destroy a valid estimate, and the very next corroborated
+			// frame re-arms hiding. Zero-sample frames (2026-11-13 Stage 4) do
+			// NOT suspend exclusion; see below. An unbroken uncorroborated
+			// streak of either kind longer than kStaleFrameLimit forgets for
+			// good.
 			const bool had_reference = o.own_est > 0.0f || o.cand > 0.0f;
-			o.stale_frames += 1;
-			if (!had_reference || o.stale_frames > kStaleFrameLimit)
+			// Stage 4: a frame with zero comparable draws (nothing reached the
+			// distance code at all — e.g. a cutscene/respawn/loading frame) is
+			// no information, not contradictory evidence. It must not suspend
+			// hiding: suspending here flipped the whole own avatar (root and
+			// fork) and any in-band character to the chams passes for exactly
+			// one frame, producing the brief low-frequency flicker. Frames that
+			// saw draws which cannot corroborate the reference (out_of_range,
+			// uncorroborated/ambiguous/near-camera skip) keep R1 semantics —
+			// they suspend hiding as before. Both kinds advance the combined
+			// backstop so an unbroken uncorroborated streak still forgets at
+			// the kStaleFrameLimit boundary (identical bound to the legacy
+			// stale_frames bound in all cases).
+			const bool zero_observation = (o.frame_obs_n == 0 && o.frame_min >= 1e8f);
+			++o.no_info_streak;
+			if (!zero_observation)
+				o.stale_frames += 1;
+			if (!had_reference || o.no_info_streak > kStaleFrameLimit || o.stale_frames > kStaleFrameLimit)
 			{
 				o.cand    = -1.0f;
 				o.stable  = 0;
 				o.own_est = -1.0f;
 				o.stale_frames = 0;
+				o.no_info_streak = 0;
 				own_fork_reset();   // a forgotten reference never keeps stale fingerprints
 				o.rebase_modal = -1.0f;
 				o.rebase_streak = 0;
@@ -720,6 +750,7 @@ namespace reshade::chams
 				",\"before_estimate\":" + capture::json_number(before.own_est) + ",\"before_stable\":" + std::to_string(before.stable) +
 				",\"candidate\":" + capture::json_number(o.cand) + ",\"estimate\":" + capture::json_number(o.own_est) + ",\"stable\":" + std::to_string(o.stable) +
 				",\"stale_frames\":" + std::to_string(o.stale_frames) +
+				",\"no_info_streak\":" + std::to_string(o.no_info_streak) +
 				",\"mode\":" + capture::json_number(skip || wipe ? -1.0f : observation) +
 				",\"mode_votes\":" + std::to_string(skip || wipe ? 0 : mode_votes);
 				capture::runtime_inflight_event(capture::native_context(), "own_tracker", line,
