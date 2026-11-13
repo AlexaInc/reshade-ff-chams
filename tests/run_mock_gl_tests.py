@@ -380,6 +380,39 @@ int main(int argc, char **argv) {
  for(int i=0;i<12;i++){ for(float r : disp_shifted) note_character_distance(r); ++g_frame_id;touch_frame(); }
  assert(std::fabs(own().own_est-2.75f)<0.05f);                              // persistent modal wins; documented trade
  std::printf("sr_displaced_cluster_persistent_modal_wins: pass\n");
+ // Fix A1 (Stage 4, 2026-11-13): a pure zero-observation frame (no
+ // comparable draws at all) must not break the displaced-cluster rebase
+ // walk — same "no information, not contradictory evidence" principle the
+ // Stage-4 stale-frames rule already applies to the same frame. A frame
+ // that saw samples but none plausible (e.g. near-camera) still breaks it.
+ g_opengl_context=reinterpret_cast<void *>(0x7200);g_frame_id=7500;touch_frame();
+ own()=own_track{};forks()=own_fork_track{};
+ settings a1{};a1.hide_own=true;a1.own_distance=5.5f;
+ program_info a1_info{};a1_info.dist_source="_WorldSpaceCameraPos";
+ const float a1_root[9]={2.44f,2.44f,2.44f,2.44f,2.44f,2.44f,2.441f,2.44f,2.44f};
+ const float a1_disp[9]={2.75f,2.75f,2.75f,2.75f,2.75f,2.75f,2.751f,2.75f,2.75f};
+ for(int i=0;i<31;i++){ for(float r : a1_root) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ const float a1_est=own().own_est;               // established reference ~2.44
+ for(int i=0;i<5;i++){ for(float r : a1_disp) note_character_distance(r); ++g_frame_id;touch_frame(); }  // walk 1..5
+ ++g_frame_id;touch_frame();                     // pure zero-observation frame: no draws at all
+ for(int i=0;i<7;i++){ for(float r : a1_disp) note_character_distance(r); ++g_frame_id;touch_frame(); }   // walk 6..12
+ assert(std::fabs(own().own_est-2.75f)<0.05f);   // re-anchored on the 12th qualifying displaced frame despite the zero-obs frame
+ assert(own().stale_frames==0);                  // stability kept across the interruption
+ assert(own_distance_excludes(a1,a1_info,2.75f,own()));   // hiding armed at the new band
+ assert(!own_distance_excludes(a1,a1_info,2.44f,own()));    // old band released
+ std::printf("sr_zero_observation_preserves_rebase_walk: pass\n");
+ // An all-near-camera frame mid-walk still resets it (samples existed but
+ // none plausible -> contradictory evidence, R2 semantics unchanged).
+ own()=own_track{};forks()=own_fork_track{};
+ for(int i=0;i<31;i++){ for(float r : a1_root) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ for(int i=0;i<5;i++){ for(float r : a1_disp) note_character_distance(r); ++g_frame_id;touch_frame(); }  // walk 1..5
+ for(int i=0;i<9;i++) note_character_distance(1.2f);       // all samples implausible (<1.5 m)
+ ++g_frame_id;touch_frame();                              // walk reset to 0 by fix-preserved semantics
+ for(int i=0;i<7;i++){ for(float r : a1_disp) note_character_distance(r); ++g_frame_id;touch_frame(); }   // walk 1..7 only
+ assert(own().own_est==a1_est);                           // never re-anchored (streak < 12)
+ assert(own().stale_frames>0);                            // uncorroborated frames still suspend hiding
+ assert(!own_distance_excludes(a1,a1_info,2.75f,own()));
+ std::printf("sr_implausible_samples_still_reset_walk: pass\n");
  g_opengl_context=nullptr;own()=own_track{};forks()=own_fork_track{};pcache().count=0;icache().count=0;
  // 2026-11-12 packet (capture-d3) replay: the own model is drawn every frame
  // as a multipart root cluster at a near-constant distance (programs

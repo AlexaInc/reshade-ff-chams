@@ -632,7 +632,15 @@ namespace reshade::chams
 			*skip = true;                  // several candidates, no cluster: learn nothing
 			return -1.0f;
 		}
-		o.rebase_modal = -1.0f; o.rebase_streak = 0;          // no plausible samples: persistence broken
+		// Stage 4 principle applied to the displaced-cluster walk: a pure
+		// zero-observation frame (no comparable draws at all) is no
+		// information, not contradictory evidence — keep the walk so an
+		// unrelated culled/menu frame mid-re-distance does not delay the
+		// re-anchor (stage4cap: rebase observed at 8526 instead of 8515).
+		// Frames that saw samples but none plausible (near-camera or all too
+		// far) still break persistence, exactly as before.
+		const bool zero_observation = (o.frame_obs_n == 0 && o.frame_min >= 1e8f);
+		if (!zero_observation) { o.rebase_modal = -1.0f; o.rebase_streak = 0; }   // no plausible samples: persistence broken
 		if (legacy_single ? (o.frame_min < 1.5f) : any_near)
 		{
 			// Near-camera transient (bone swing). Forgetting here destroys the
