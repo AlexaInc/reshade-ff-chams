@@ -181,8 +181,24 @@ namespace reshade::chams
 		// corroborated frame re-arms it. Only a streak longer than
 		// kStaleFrameLimit (30, i.e. ~0.5 s) forgets for good (spectate safety).
 		int   stale_frames = 0;
+		// Displaced-cluster bookkeeping (Stage 3 FIX A). When the own avatar is
+		// re-distanced beyond the 0.3 m candidate band (weapon lower/raise,
+		// camera recomposure, walking), the frame modal keeps disagreeing with
+		// the established reference and R2 refuses it. Correct for a one-frame
+		// spike, wrong for a modal that *walks* with the avatar. rebase_modal
+		// tracks the most recent displaced modal (walk-tolerant): each frame
+		// within 0.10 m of the previous one extends the streak. Repeating for
+		// kDisplacedClusterFrames consecutive frames, it is the own model in a
+		// new distance band — re-anchor instead of drifting into the
+		// kStaleFrameLimit forget-then-reacquire gap during which the avatar
+		// draws visible. A foreign camped cluster is indistinguishable from a
+		// re-distanced own model by distance alone; this path re-anchors sooner
+		// than the post-forget reacquire that already happens today.
+		float rebase_modal  = -1.0f;
+		int   rebase_streak = 0;
 	};
 	constexpr int kStaleFrameLimit = 30;
+	constexpr int kDisplacedClusterFrames = 12;  // consecutive persistent displaced modal frames before the tracker re-anchors
 	inline own_track &own() { static thread_local own_track o; return o; }
 
 	// ======================================================== Stage 2 (F1)
@@ -502,9 +518,18 @@ namespace reshade::chams
 	// skipped; if samples exist but all are <1.5m the frame is skipped
 	// (near-camera transient) instead of wiping the estimate. Zero comparable
 	// draws at all keeps the legacy forget behaviour.
-	inline float pick_frame_observation(const own_track &o, bool *skip, bool *wipe, int *votes_out)
+	//
+	// Stage 3 FIX A: a displaced modal (>0.3 m from the reference, >=3 votes)
+	// that persists for kDisplacedClusterFrames consecutive frames — each
+	// frame's modal within 0.10 m of the previous one (walk-tolerant) — is
+	// the own model re-distanced (weapon lower/raise, camera recomposure,
+	// walking), not a one-frame enemy spike. Such a frame returns the modal
+	// with *rebase=true so the tracker re-anchors without restarting
+	// stability. Anything else displaced keeps legacy R2 semantics (skip;
+	// the estimate is forgotten after the kStaleFrameLimit streak).
+	inline float pick_frame_observation(own_track &o, bool *skip, bool *wipe, int *votes_out, bool *rebase)
 	{
-		*skip = false; *wipe = false; *votes_out = 0;
+		*skip = false; *wipe = false; *votes_out = 0; *rebase = false;
 		const float reference = o.own_est > 0.0f ? o.own_est : o.cand;
 		int plausible = 0, best_votes = 0;
 		float min_plausible = 1e9f, best_modal = -1.0f, closest_plausible = 1e9f;
@@ -542,6 +567,7 @@ namespace reshade::chams
 		{
 			if (plausible < 3)
 			{
+				o.rebase_modal = -1.0f; o.rebase_streak = 0;   // persistence broken
 				if (reference > 0.0f)
 				{
 					// Sparse frame with an established tracker: learn only from
@@ -568,15 +594,36 @@ namespace reshade::chams
 				// at 2.43m / 2.15m / 2.40m). Skip the frame instead of absorbing it.
 				if (reference > 0.0f && std::fabs(best_modal - reference) > 0.3f)
 				{
+					// R2 keeps a lone displaced majority out (it is an enemy
+					// until proven otherwise), but a modal that *walks* with the
+					// avatar — each frame within 0.10 m of the previous modal, for
+					// kDisplacedClusterFrames consecutive frames — is the own model
+					// re-distanced. Re-anchor instead of drifting into the
+					// forget-then-reacquire visibility gap. The streak follows a
+					// monotonic walk; alternating clusters break it.
+					if (o.rebase_modal > 0.0f && std::fabs(best_modal - o.rebase_modal) <= 0.10f)
+						++o.rebase_streak;
+					else
+						o.rebase_streak = 1;
+					o.rebase_modal = best_modal;
+					if (o.rebase_streak >= kDisplacedClusterFrames)
+					{
+						*rebase = true;
+						*votes_out = best_votes;
+						return best_modal;
+					}
 					*skip = true;
 					return -1.0f;
 				}
+				o.rebase_modal = -1.0f; o.rebase_streak = 0;   // near the reference: normal cluster
 				*votes_out = best_votes;
 				return best_modal;          // persistent root cluster
 			}
+			o.rebase_modal = -1.0f; o.rebase_streak = 0;      // ambiguous: persistence broken
 			*skip = true;                  // several candidates, no cluster: learn nothing
 			return -1.0f;
 		}
+		o.rebase_modal = -1.0f; o.rebase_streak = 0;          // no plausible samples: persistence broken
 		if (legacy_single ? (o.frame_min < 1.5f) : any_near)
 		{
 			// Near-camera transient (bone swing). Forgetting here destroys the
@@ -601,10 +648,23 @@ namespace reshade::chams
 		own_track &o = own();
 		const bool tracking = capture::runtime_enabled();
 		const own_track before = tracking ? o : own_track{};
-		bool skip = false, wipe = false;
+		bool skip = false, wipe = false, rebase = false;
 		int mode_votes = 0;
-		const float observation = pick_frame_observation(o, &skip, &wipe, &mode_votes);
-		if (!skip && !wipe)
+		const float observation = pick_frame_observation(o, &skip, &wipe, &mode_votes, &rebase);
+		if (rebase)
+		{
+			// Stage 3 FIX A: a persistent displaced modal (a walk, not a spike)
+			// has now held for kDisplacedClusterFrames consecutive frames —
+			// re-anchor to the own model's new distance without restarting
+			// stability. The avatar is drawn every frame; this is not a new
+			// candidate.
+			o.cand = observation;
+			o.own_est = observation;
+			o.stale_frames = 0;
+			o.rebase_modal = -1.0f;
+			o.rebase_streak = 0;
+		}
+		else if (!skip && !wipe)
 		{
 			// Only learn from plausible third-person distances (1.5m - 5m).
 			// Enemy distances outside this range are ignored so they cannot
@@ -641,6 +701,8 @@ namespace reshade::chams
 				o.own_est = -1.0f;
 				o.stale_frames = 0;
 				own_fork_reset();   // a forgotten reference never keeps stale fingerprints
+				o.rebase_modal = -1.0f;
+				o.rebase_streak = 0;
 			}
 			// else: keep candidate/estimate/stability; hiding is suspended while
 			// stale_frames > 0 (see own_distance_excludes).
@@ -648,7 +710,8 @@ namespace reshade::chams
 		// skip: a near-camera transient, an uncorroborated or an ambiguous
 		// frame was observed; candidate/estimate/stability survive (stale path).
 		if (tracking) {
-			const char *reason = skip ? "outlier_skipped" :
+			const char *reason = rebase ? "displaced_cluster_rebase" :
+				skip ? "outlier_skipped" :
 				wipe ? ((before.frame_min >= 1e8f && before.frame_obs_n == 0) ? "no_observation" : "out_of_range") :
 				(before.cand < 0 || std::fabs(observation - before.cand) > 0.3f) ? "candidate_changed" :
 				(before.stable < 30 && o.stable >= 30) ? "acquired" : "candidate_continued";
@@ -746,6 +809,31 @@ namespace reshade::chams
 		"_SkinBones",          "_BoneTransforms", "unity_BoneWeights"
 	};
 
+	// Cel-shaded / toon character family (Stage 3 FIX B). Anime-style bundles
+	// render avatars with cel shading instead of the avatar tokens above: a
+	// cel ramp threshold (+ bright/shade ramp) for the body pass and an
+	// inverted-hull outline pass. Neither carries _CharaLightIntensity nor a
+	// bone-matrix uniform, so every character draw of such a bundle stops at
+	// this classifier today. One cel token is enough, mirroring the wide
+	// rule; these are shader-family conventions, never a specific bundle,
+	// texture, mesh or VBO. The MToon entries cover Unity's official toon
+	// shader family (_ShadeThreshold / _ShadeColor / _ShadeShift).
+	static const char *const k_cel_tokens[] = {
+		"_ShadowThreshold", "_BrightColor",                  // cel ramp body passes
+		"_ShadeThreshold", "_ShadeColor", "_ShadeShift",    // Unity MToon-style bodies
+		"_OutLineColor", "_OutLineWidth", "_OutLineZOffset" // inverted-hull outline passes
+	};
+
+	inline bool program_has_cel_token(GLint program)
+	{
+		if (gl.GetUniformLocation == nullptr)
+			return false;
+		for (const char *name : k_cel_tokens)
+			if (gl.GetUniformLocation(static_cast<GLuint>(program), name) != -1)
+				return true;
+		return false;
+	}
+
 	inline bool program_has_skin_uniform(GLint program)
 	{
 		if (gl.GetUniformLocation == nullptr)
@@ -783,6 +871,8 @@ namespace reshade::chams
 		bool has_wide = has_chara;
 		if (!has_wide)
 			has_wide = character_token(program)[0] != '-';
+		if (!has_wide)
+			has_wide = program_has_cel_token(program);   // Stage 3 FIX B: cel/toon family
 
 		bool has = false;
 		switch (g_settings.detect_mode)

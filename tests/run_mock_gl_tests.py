@@ -80,6 +80,11 @@ int uniform_location(unsigned program,const char *name){
  if(program==999 && std::strcmp(name,"_CharaLightIntensity")==0) return 8;          // F1 mock character
  if(program==999 && std::strcmp(name,"hlslcc_mtx4x4unity_ObjectToWorld")==0) return 1;
  if(program==999 && std::strcmp(name,"_WorldSpaceCameraPos")==0) return 9;
+ if(program==777 && std::strcmp(name,"_ShadowThreshold")==0) return 11;
+ if(program==778 && std::strcmp(name,"_OutLineWidth")==0) return 12;
+ if(program==778 && std::strcmp(name,"_OutLineZOffset")==0) return 13;
+ if(program==779 && std::strcmp(name,"_ShadeColor")==0) return 14;
+ if(program==780 && std::strcmp(name,"_Shininess")==0) return 15;
  return -1;
 }
 float mock_world999[16]={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,2.86f,1};   // translation drives distance
@@ -142,6 +147,23 @@ int main(int argc, char **argv) {
  pcache().count=0;g_settings.detect_mode=0;assert(!program_is_character(123));
  g_settings.detect_mode=1;assert(program_is_character(123));
  g_settings.detect_mode=0;assert(!program_is_character(123));
+ // Cel/toon family (Stage 3 FIX B): classified in wide (1) and all (3) modes
+ // exactly like the avatar tokens; strict (0) and skinned (2) unchanged.
+ pcache().count=0;
+ g_settings.detect_mode=1;
+ assert(program_is_character(777));  // cel ramp body (_ShadowThreshold)
+ assert(program_is_character(778));  // inverted-hull outline (_OutLineWidth/_OutLineZOffset)
+ assert(program_is_character(779));  // MToon-style body (_ShadeColor)
+ assert(!program_is_character(780)); // plain specular lit prop: no toon/avatar/bone tokens
+ g_settings.detect_mode=0;
+ assert(!program_is_character(777)); assert(!program_is_character(778)); assert(!program_is_character(779));
+ g_settings.detect_mode=2;
+ assert(!program_is_character(777)); assert(!program_is_character(778)); assert(!program_is_character(779));
+ g_settings.detect_mode=3;
+ assert(program_is_character(777)); assert(program_is_character(778)); assert(program_is_character(779)); assert(!program_is_character(780));
+ g_settings.detect_mode=0;
+ pcache().count=0;
+ std::printf("cel_toon_family_detection: pass\n");
  // Reused cache slots must not retain another program's matrices/camera.
  icache().count=0;program_info *old=get_program_info(123);assert(old);
  old->world[12]=7;old->view_m[13]=9;old->cam_uniform[0]=11;
@@ -301,6 +323,64 @@ int main(int argc, char **argv) {
  const bool nearby_enemy_hypothesis=own_distance_excludes(c11_settings,c11_info,@C11_PART@,equal_state);
  pending("capture11 equal-distance nearby enemy remains visible",local_hypothesis && !nearby_enemy_hypothesis);
  g_opengl_context=nullptr;own()=own_track{};pcache().count=0;icache().count=0;
+ // ===== Stage 3 FIX A: persistent displaced own cluster re-anchors =====
+ // The own model drifted beyond the 0.3 m band in the field captures
+ // (without-enemy ~2.44->2.78+; with-enemy ~2.25->2.95). The shifted modal
+ // held for 31+ consecutive frames while R2 refused it; the estimate was
+ // forgotten and re-acquired ~30 frames later (the visible flicker). A
+ // walk-tolerant persistent modal (kDisplacedClusterFrames=12) now
+ // re-anchors in place, stability kept, enemy untouched.
+ g_opengl_context=reinterpret_cast<void *>(0x7300);g_frame_id=7000;touch_frame();
+ own()=own_track{};forks()=own_fork_track{};
+ settings dsp{};dsp.hide_own=true;dsp.own_distance=5.5f;
+ program_info dsp_info{};dsp_info.dist_source="_WorldSpaceCameraPos";
+ const float disp_root[9]={2.44f,2.44f,2.44f,2.44f,2.44f,2.44f,2.441f,2.44f,2.44f};
+ const float disp_shifted[9]={2.75f,2.75f,2.75f,2.75f,2.75f,2.75f,2.751f,2.75f,2.75f};
+ for(int i=0;i<31;i++){ for(float r : disp_root) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ assert(own().own_est>2.0f && own().stable==31);
+ const float disp_est=own().own_est;
+ for(int i=0;i<11;i++){
+   for(float r : disp_shifted) note_character_distance(r);
+   ++g_frame_id;touch_frame();
+   assert(own().own_est==disp_est && own().stale_frames==i+1);             // streak builds, estimate kept
+ }
+ for(float r : disp_shifted) note_character_distance(r);
+ ++g_frame_id;touch_frame();                                                // 12th consecutive persistent displaced frame
+ assert(std::fabs(own().own_est-2.75f)<0.05f);                              // re-anchored to the own model's new distance
+ assert(own().stable>=30 && own().stale_frames==0);                         // hiding stays armed, stability kept
+ assert(own_distance_excludes(dsp,dsp_info,2.75f,own()));                   // own avatar hidden at the new band
+ assert(!own_distance_excludes(dsp,dsp_info,2.44f,own()));                  // old band released, nothing else hidden
+ assert(!own_distance_excludes(dsp,dsp_info,3.05f,own()));                  // far enemy untouched
+ std::printf("sr_displaced_cluster_reanchor: pass\n");
+ // After a jump, small per-frame movement keeps the tracking native: once the
+ // re-anchor fires, est sits on the new cluster and the normal path follows
+ // the walk (verified by the est staying near the walk position).
+ own()=own_track{};forks()=own_fork_track{};
+ for(int i=0;i<31;i++){ for(float r : disp_root) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ for(int i=0;i<12;i++){ for(float r : disp_shifted) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ float walk=2.75f;
+ for(int i=0;i<10;i++){ walk+=0.05f; const float rr[9]={walk,walk,walk,walk,walk,walk,walk,walk,walk}; for(float r : rr) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ assert(std::fabs(own().own_est-walk)<0.30f);                               // normal path tracks the walk after re-anchoring
+ std::printf("sr_displaced_cluster_walk_tracked: pass\n");
+ // R2 preserved: an alternating modal (two distant clusters) never re-anchors.
+ own()=own_track{};forks()=own_fork_track{};
+ for(int i=0;i<31;i++){ for(float r : disp_root) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ const float r2_est=own().own_est;
+ const float alt_a[9]={2.75f,2.75f,2.75f,2.75f,2.75f,2.75f,2.75f,2.75f,2.75f};
+ const float alt_b[9]={1.90f,1.90f,1.90f,1.90f,1.90f,1.90f,1.90f,1.90f,1.90f};
+ for(int i=0;i<40;i++){ for(float r : (i%2==0?alt_a:alt_b)) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ assert(own().own_est==r2_est || own().own_est<0);                          // never re-anchored; wipe at 31 as legacy (spectate safety)
+ std::printf("sr_displaced_cluster_alternating_rejected: pass\n");
+ // R2 preserved: a persistent FOREIGN modal re-anchors after 12 frames — the
+ // documented, accepted trade (indistinguishable from a re-distanced own
+ // model by distance alone; strictly sooner than the post-forget reacquire
+ // the shipping code performs anyway).
+ own()=own_track{};forks()=own_fork_track{};
+ for(int i=0;i<31;i++){ for(float r : disp_root) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ for(int i=0;i<12;i++){ for(float r : disp_shifted) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ assert(std::fabs(own().own_est-2.75f)<0.05f);                              // persistent modal wins; documented trade
+ std::printf("sr_displaced_cluster_persistent_modal_wins: pass\n");
+ g_opengl_context=nullptr;own()=own_track{};forks()=own_fork_track{};pcache().count=0;icache().count=0;
  // 2026-11-12 packet (capture-d3) replay: the own model is drawn every frame
  // as a multipart root cluster at a near-constant distance (programs
  // 276/277/278/279 at 3.038 m, 8-9 draws), one animated bone origin
@@ -459,12 +539,25 @@ int main(int argc, char **argv) {
  assert(!own_distance_excludes(sr,sr_info,3.037654f,own()));   // own draw must not disappear into the enemy modal
  assert(!own_distance_excludes(sr,sr_info,2.20f,own()));       // the foreign distance itself is never excluded (it is not the own model)
  std::printf("sr_r2_foreign_modal_rejected: pass\n");
- // sr_r2_foreign_streak_hard_wipe: 31 consecutive foreign-majority frames finally forget (no infinite foreign trust).
+ // sr_r2_persistent_foreign_modal_reanchors: Stage 3 FIX A supersedes the
+ // legacy hard-forget for a *persistent* displaced modal (12 consecutive
+ // walk-tolerant frames). A foreign camped cluster is indistinguishable
+ // from a re-distanced own model by distance alone; the tracker re-anchors
+ // — strictly sooner than the post-forget reacquire the legacy code
+ // performed anyway (observed in both captures at the 31-frame forget).
  own()=own_track{};
  for(int i=0;i<31;i++){ for(float r : sr_roots) note_character_distance(r); ++g_frame_id;touch_frame(); }
- for(int i=0;i<31;i++){++g_frame_id; for(int k=0;k<6;k++) note_character_distance(2.20f); touch_frame();}
+ for(int i=0;i<12;i++){++g_frame_id; for(int k=0;k<6;k++) note_character_distance(2.20f); touch_frame();}
+ assert(std::fabs(own().own_est-2.20f)<0.05f && own().stable>=30);
+ std::printf("sr_r2_persistent_foreign_modal_reanchors: pass\n");
+ // sr_r2_alternating_foreign_streak_hard_wipe: no persistence (two distant
+ // clusters alternating) -> no re-anchor; the estimate is forgotten at the
+ // kStaleFrameLimit boundary as before (death/spectate safety).
+ own()=own_track{};
+ for(int i=0;i<31;i++){ for(float r : sr_roots) note_character_distance(r); ++g_frame_id;touch_frame(); }
+ for(int i=0;i<31;i++){++g_frame_id; for(int k=0;k<6;k++) note_character_distance(i%2==0?2.20f:4.30f); touch_frame();}
  assert(own().own_est<0 && own().stable==0);
- std::printf("sr_r2_foreign_streak_hard_wipe: pass\n");
+ std::printf("sr_r2_alternating_foreign_streak_hard_wipe: pass\n");
  // sr_r2_near_reference_cluster_learned: a cluster inside the 0.3m band is still accepted (not over-gated).
  own()=own_track{};
  for(int i=0;i<31;i++){ for(float r : sr_roots) note_character_distance(r); ++g_frame_id;touch_frame(); }
