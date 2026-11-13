@@ -77,9 +77,18 @@ void vp(int a,int b,int c,int d){ints[GL_VIEWPORT]={a,b,c,d};} void cc(float a,f
 int uniform_location(unsigned program,const char *name){
  if(program==123 && std::strcmp(name,"_DiffIntensity")==0) return 7;
  if(program==456 && std::strcmp(name,"_CharaLightIntensity")==0) return 8;
+ if(program==999 && std::strcmp(name,"_CharaLightIntensity")==0) return 8;          // F1 mock character
+ if(program==999 && std::strcmp(name,"hlslcc_mtx4x4unity_ObjectToWorld")==0) return 1;
+ if(program==999 && std::strcmp(name,"_WorldSpaceCameraPos")==0) return 9;
  return -1;
 }
-void get_uniform(unsigned, int, float *out){for(int i=0;i<16;++i)out[i]=float(i+1);}
+float mock_world999[16]={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,2.86f,1};   // translation drives distance
+float mock_cam999[3]={0.01f,0.0f,0.0f};
+void get_uniform(unsigned program, int loc, float *out){
+ if(program==999 && loc==1){ std::memcpy(out,mock_world999,sizeof(mock_world999)); return; }
+ if(program==999 && loc==9){ out[0]=mock_cam999[0]; out[1]=mock_cam999[1]; out[2]=mock_cam999[2]; for(int i=3;i<16;i++)out[i]=0.0f; return; }
+ for(int i=0;i<16;++i)out[i]=float(i+1);
+}
 struct GL {
 '''
 head += ''.join('Any '+n+';\n' for n in names if n not in custom)
@@ -464,6 +473,319 @@ int main(int argc, char **argv) {
  assert(own().stale_frames==0 && own().stable==32);
  std::printf("sr_r2_near_reference_cluster_learned: pass\n");
  g_opengl_context=nullptr;own()=own_track{};pcache().count=0;icache().count=0;
+ // ===== sr_fork_* block (Stage 2 F1: own-fork fingerprint binding) =====
+ // The own attachment fork is the accessory draw with a dedicated fingerprint
+ // seen inside the root draw span. These tests pin F1's binding, rejection,
+ // stale-state, enemy-interleaving, buffer-reuse, absence/unbinding and reset
+ // semantics against the mock GL.
+ g_opengl_context=reinterpret_cast<void *>(0x80000);g_frame_id=6000;touch_frame();
+ own()=own_track{};pcache().count=0;icache().count=0;forks()=own_fork_track{};
+ g_settings=settings{};g_settings.hide_own=true;g_settings.own_distance=4.9f;g_settings.detect_mode=1;g_settings.render_mode=1;g_settings.enabled=true;
+ settings &srf = g_settings;
+ program_info srf_p{};srf_p.dist_source="_WorldSpaceCameraPos";
+ own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;   // armed tracker (as in a live game)
+ auto srf_note=[&](float dist, unsigned array, unsigned element, unsigned prog, int fcount, unsigned tex, uint64_t off){
+   ints[GL_ARRAY_BUFFER_BINDING][0]=array;
+   ints[GL_ELEMENT_ARRAY_BUFFER_BINDING][0]=element;
+   at(GL_TEXTURE0);bt(GL_TEXTURE_2D,tex);
+   note_character_distance(dist);   // as draw_chams does before the F1 hook
+   return own_fork_note_draw(srf,srf_p,dist,own(),(int)prog,fcount,off);
+ };
+ auto srf_frame=[&](){ ++g_frame_id; touch_frame(); };
+ auto srf_root_span=[&](){ for(int k=0;k<9;k++) srf_note(2.86f,1639,712,282,10491,656,(uint64_t)k*4700+4000); };
+ auto srf_fork=[&](float dist){ return srf_note(dist,1335,1336,284,864,628,0); };
+ // --- sr_fork_bind_after_30_eligible_frames: 29 frames of bracketed observation do not bind; the 30th does.
+ srf_frame(); own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+ for(int i=0;i<29;i++){
+   for(int k=0;k<4;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+   assert(!srf_fork(1.90f));
+   for(int k=4;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+   srf_frame();
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+ }
+ {   // the 30th corroborated, bracketed frame binds the fork mid-boundary
+   for(int k=0;k<4;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+   srf_fork(1.90f);
+   for(int k=4;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+   bool bound=false; for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used&&forks().entries[i].bound) bound=true;
+   assert(!bound);          // binding happens at the boundary finalise, not mid-frame
+   srf_frame();
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   bool bound2=false; for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used&&forks().entries[i].bound) bound2=true;
+   assert(bound2);
+ }
+ std::printf("sr_fork_bind_after_30_eligible_frames: pass\n");
+ // --- sr_fork_bound_fork_hides_in_span: once bound, the fork hides when the span began this frame.
+ for(int k=0;k<4;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+ assert(srf_fork(1.70f));
+ for(int k=4;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+ srf_frame();
+ own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+ std::printf("sr_fork_bound_fork_hides_in_span: pass\n");
+ // --- sr_fork_before_span_never_hidden: bound fork drawn before any root this frame stays visible.
+ {
+   assert(!srf_fork(1.70f));   // first character draw of the frame: span has not begun
+   for(int k=0;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+   srf_frame();
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+ }
+ std::printf("sr_fork_before_span_never_hidden: pass\n");
+ // --- sr_fork_stale_frame_inert: on an uncorroborated frame F1 does nothing (R1 own-avatar visibility).
+ {
+   // Lone fork sample: the frame cannot corroborate -> tracker skip -> stale=1, estimate retained (R1).
+   assert(!srf_note(1.90f,1335,1336,284,864,628,0));   // span empty this frame: not hidden regardless
+   srf_frame();
+   assert(own().stale_frames==1);                      // R1: estimate retained, hiding suspended
+   assert(!own_fork_note_draw(srf,srf_p,1.90f,own(),284,864,0));   // stale frame: F1 inert, fork visible
+   srf_frame();                                        // nothing observed -> stale=2, still retained
+   assert(own().stale_frames==2);
+   // A corroborated frame re-arms hiding on the very next frame.
+   own().stale_frames=0;
+   for(int k=0;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+   assert(srf_fork(1.90f));
+   srf_frame();
+   own().stale_frames=0;
+ }
+ std::printf("sr_fork_stale_frame_inert: pass\n");
+ // --- sr_fork_enemy_interleaved_out_of_band_never_binds: bracketed but beyond the 1.5 m learning sanity -> never bound.
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x80001);g_frame_id=7000;touch_frame();
+   own()=own_track{};forks()=own_fork_track{};
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   for(int i=0;i<40;i++){
+     srf_root_span();
+     srf_note(4.60f,933,979,197,17439,607,0);      // an enemy drawn inside the own span, 1.74 m away: out of sanity band
+     srf_fork(1.90f);
+     srf_frame();
+     own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   }
+   bool enemy_bound=false; for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used&&forks().entries[i].bound){ int fp_prog=forks().entries[i].fp.program; int fp_arr=forks().entries[i].fp.array_buffer; if(fp_prog==197&&fp_arr==933) enemy_bound=true; }
+   assert(!enemy_bound);
+ }
+ std::printf("sr_fork_enemy_interleaved_out_of_band_never_binds: pass\n");
+ // --- sr_fork_tail_enemy_never_binds: an enemy drawn after the own span every frame never enters binding.
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x80002);g_frame_id=8000;touch_frame();
+   own()=own_track{};forks()=own_fork_track{};
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   for(int i=0;i<40;i++){
+     srf_root_span();
+     srf_note(3.70f,933,979,197,17439,607,0);      // sane gap (0.84 m) but never bracketed
+     srf_frame();
+     own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   }
+   bool enemy_used=false; for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used&&forks().entries[i].fp.array_buffer==933) enemy_used=true;
+   assert(!enemy_used);   // never even tracked: not observed inside the span
+ }
+ std::printf("sr_fork_tail_enemy_never_binds: pass\n");
+ // --- sr_fork_inband_enemy_is_root_not_fork: a bracketed draw at est distance is a root member, never a fork candidate.
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x80003);g_frame_id=9000;touch_frame();
+   own()=own_track{};forks()=own_fork_track{};
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   for(int i=0;i<40;i++){
+     srf_root_span();
+     srf_note(2.88f,933,979,197,17439,607,0);      // inside est±0.2: indistinguishable from a root pass
+     srf_frame();
+     own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   }
+   bool enemy_used=false; for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used&&forks().entries[i].fp.array_buffer==933) enemy_used=true;
+   assert(!enemy_used);   // root member: hidden by the distance predicate, not tracked as a fork
+   assert(own_distance_excludes(srf,srf_p,2.88f,own()));
+ }
+ std::printf("sr_fork_inband_enemy_is_root_not_fork: pass\n");
+ // --- sr_fork_absence_unbinds_after_90_corroborated_frames: a bound fork unseen for 91 corroborated character-active frames is forgotten.
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x80004);g_frame_id=10000;touch_frame();
+   own()=own_track{};forks()=own_fork_track{};
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   for(int i=0;i<30;i++){ for(int k=0;k<4;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000); assert(!srf_fork(1.90f)); for(int k=4;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000); srf_frame(); }
+   bool bound=false; for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used&&forks().entries[i].bound) bound=true;
+   assert(bound);              // bound at the 30th corroborated boundary
+   for(int i=0;i<90;i++){ srf_root_span(); srf_frame(); }
+   bool still=false; for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used&&forks().entries[i].bound) still=true;
+   assert(still);              // exactly 90 absences: still bound (boundary is exclusive)
+   srf_root_span(); srf_frame();
+   bool gone=true; for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used&&forks().entries[i].bound) gone=false;
+   assert(gone);               // 91st corroborated absence: forgotten (outfit swap / id reuse)
+ }
+ std::printf("sr_fork_absence_unbinds_after_90_corroborated_frames: pass\n");
+ // --- sr_fork_bound_fork_drawing_stays_bound: a bound fork hidden every frame is never mistaken for absent.
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x8000d);g_frame_id=18000;touch_frame();
+   own()=own_track{};forks()=own_fork_track{};
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   for(int i=0;i<30;i++){ for(int k=0;k<4;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000); assert(!srf_fork(1.90f)); for(int k=4;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000); srf_frame(); }
+   bool bound=false; for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used&&forks().entries[i].bound) bound=true;
+   assert(bound);
+   for(int i=0;i<120;i++){
+     for(int k=0;k<4;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+     assert(srf_fork(1.90f));   // bound and hidden every frame
+     for(int k=4;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+     srf_frame();
+   }
+   bool still=false; for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used&&forks().entries[i].bound) still=true;
+   assert(still);               // hidden-by-F1 counts as seen: no self-unbind
+   int streak=0; for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used&&forks().entries[i].bound) streak=forks().entries[i].absent_streak;
+   assert(streak==0);
+ }
+ std::printf("sr_fork_bound_fork_drawing_stays_bound: pass\n");
+ // --- sr_fork_same_tuple_different_texture_no_hide: same GL fingerprint shape but different texture is a different fingerprint.
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x80005);g_frame_id=11000;touch_frame();
+   own()=own_track{};forks()=own_fork_track{};
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   for(int i=0;i<30;i++){ for(int k=0;k<4;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000); assert(!srf_fork(1.90f)); for(int k=4;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000); srf_frame(); own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0; }
+   srf_frame();
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   for(int k=0;k<4;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+   assert(!srf_note(1.90f,1335,1336,284,864,999,0));   // same VBO/EBO/program/count, different texture: NOT the bound fork
+   for(int k=4;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+   assert(srf_fork(1.90f));                            // the real fork is still hidden
+   srf_frame();
+ }
+ std::printf("sr_fork_same_tuple_different_texture_no_hide: pass\n");
+ // --- sr_fork_buffer_reuse_count_change_no_hide: same buffer ids, different geometry (count changed) is a different fingerprint.
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x80006);g_frame_id=12000;touch_frame();
+   own()=own_track{};forks()=own_fork_track{};
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   for(int i=0;i<30;i++){ for(int k=0;k<4;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000); assert(!srf_fork(1.90f)); for(int k=4;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000); srf_frame(); own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0; }
+   srf_frame();
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   for(int k=0;k<4;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+   assert(!srf_note(1.90f,1335,1336,284,500,628,0));   // count changed: not the bound fork (id reuse deflected)
+   for(int k=4;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+   assert(srf_fork(1.90f));
+   srf_frame();
+ }
+ std::printf("sr_fork_buffer_reuse_count_change_no_hide: pass\n");
+ // --- sr_fork_context_reset_clears: a device/native-context reset forgets fingerprints.
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x80007);g_frame_id=13000;touch_frame();
+   own()=own_track{};forks()=own_fork_track{};
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   for(int i=0;i<30;i++){ for(int k=0;k<4;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000); assert(!srf_fork(1.90f)); for(int k=4;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000); srf_frame(); }
+   bool bound=false; for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used&&forks().entries[i].bound) bound=true;
+   assert(bound);
+   g_opengl_context=reinterpret_cast<void *>(0x80008);touch_frame();   // context reset
+   bool any=false; for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used) any=true;
+   assert(!any);
+   assert(own().own_est<0 && own().stable==0);
+ }
+ std::printf("sr_fork_context_reset_clears: pass\n");
+ // --- sr_fork_hard_wipe_clears: crossing kStaleFrameLimit forgets fingerprints with the estimate.
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x80009);g_frame_id=14000;touch_frame();
+   own()=own_track{};forks()=own_fork_track{};
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   for(int i=0;i<30;i++){ for(int k=0;k<4;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000); assert(!srf_fork(1.90f)); for(int k=4;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000); srf_frame(); }
+   bool bound=false; for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used&&forks().entries[i].bound) bound=true;
+   assert(bound);
+   for(int i=0;i<31;i++){ ++g_frame_id; touch_frame(); }   // 31 zero-observation frames -> hard wipe
+   assert(own().own_est<0 && own().stable==0 && own().stale_frames==0);
+   bool any=false; for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used) any=true;
+   assert(!any);
+ }
+ std::printf("sr_fork_hard_wipe_clears: pass\n");
+ // --- sr_fork_out_of_sanity_resets_streak: a bracketed frame beyond the 1.5 m sanity band breaks consecutiveness.
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x8000a);g_frame_id=15000;touch_frame();
+   own()=own_track{};forks()=own_fork_track{};
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   for(int i=0;i<29;i++){ srf_root_span(); srf_fork(1.90f); srf_frame(); own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0; }
+   srf_root_span(); srf_fork(4.90f); srf_frame();   // fork swing beyond sanity: streak breaks
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   srf_root_span(); srf_fork(1.90f); assert(!own_fork_should_hide(srf,1.90f,own(),forks(),own_fork_fp{284,1335,1336,864,628,0})); srf_frame();
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   bool bound=false; for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used&&forks().entries[i].bound) bound=true;
+   assert(!bound);   // one out-of-band frame reset the 30-frame consecutiveness
+   srf_frame();
+ }
+ std::printf("sr_fork_out_of_sanity_resets_streak: pass\n");
+ // --- sr_fork_obs_buffer_full_resets_streak: a tracked candidate whose observation is dropped
+ // because the observation buffer is full cannot keep its in-run streak (it must not bind from it).
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x8000e);g_frame_id=19000;touch_frame();
+   own()=own_track{};forks()=own_fork_track{};
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   for(int i=0;i<29;i++){
+     for(int k=0;k<4;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+     assert(!srf_fork(1.90f));
+     for(int k=4;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+     srf_frame();
+   }
+   int streak=-1; for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used&&forks().entries[i].fp.array_buffer==1335) streak=forks().entries[i].in_run_streak;
+   assert(streak==29);   // sanity: the fork is tracked with a nearly-complete streak
+   // Overflow frame: 16 distinct fingerprints (far out of band, never bracketed, but still
+   // recorded into the observation buffer) fill it BEFORE the fork is noted. They allocate
+   // nothing at the boundary, so the fork track survives intact.
+   for(int i=0;i<16;i++) srf_note(8.0f,3200+i,3300+i,900+i,5000+i,700+i,(uint64_t)i*131+17);
+   for(int k=0;k<4;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+   assert(!srf_fork(1.90f));   // drawn bracketed, but the observation buffer is full: dropped
+   for(int k=4;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+   srf_frame();
+   int streak2=-2, absent2=-2, seen2=-2;
+   bool found=false;
+   for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used&&forks().entries[i].fp.array_buffer==1335) { streak2=forks().entries[i].in_run_streak; absent2=forks().entries[i].absent_streak; seen2=forks().entries[i].seen_this_frame; found=true; }
+   assert(found);              // the track survives (nothing allocated over it)
+   assert(streak2==0);         // the dropped observation broke the streak (regression guard)
+   assert(absent2==0);         // it counted as seen: no absence accrued
+   assert(seen2==0);           // seen flag consumed by the boundary
+   // And one more valid bracketed frame cannot complete a binding from the old streak.
+   for(int k=0;k<4;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+   assert(!srf_fork(1.90f));
+   for(int k=4;k<9;k++) srf_note(2.86f,1639,712,282,10491,650,(uint64_t)k*4700+4000);
+   srf_frame();
+   int streak3=-2; bool bound3=false;
+   for(int i=0;i<kForkMaxEntries;i++) if(forks().entries[i].used&&forks().entries[i].fp.array_buffer==1335) { streak3=forks().entries[i].in_run_streak; bound3=forks().entries[i].bound!=0; }
+   assert(streak3==1);
+   assert(!bound3);
+ }
+ std::printf("sr_fork_obs_buffer_full_resets_streak: pass\n");
+ // --- sr_fork_coldstart_never_binds: without an established estimate a bracketed fork never binds (cold start / spectate).
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x8000b);g_frame_id=16000;touch_frame();
+   own()=own_track{};forks()=own_fork_track{};
+   for(int i=0;i<40;i++){
+     srf_note(0.80f,1335,1336,284,864,628,0);          // near-camera transient: skipped
+     srf_note(2.0f,1639,712,282,10491,650,1000);       // spread origins: no cluster, never learns
+     srf_note(3.0f,1639,712,282,10491,650,2000);
+     srf_note(4.0f,1639,712,282,10491,650,3000);
+     srf_frame();
+   }
+   assert(own().own_est<0 && own().stable==0);         // tracker never armed
+   for(int i=0;i<kForkMaxEntries;i++) assert(forks().entries[i].used==0);   // F1 never engaged
+ }
+ std::printf("sr_fork_coldstart_never_binds: pass\n");
+ // --- sr_fork_end_to_end_binding_and_hide: full draw path; the fork starts hidden only after 30 corroborated in-span frames.
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x8000c);g_frame_id=17000;touch_frame();
+   own()=own_track{};pcache().count=0;icache().count=0;forks()=own_fork_track{};
+   g_settings=settings{};g_settings.hide_own=true;g_settings.own_distance=4.9f;g_settings.detect_mode=1;g_settings.render_mode=1;g_settings.enabled=true;
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   int fork_hidden=0, fork_total=0, root_hidden=0;
+   for(int f=0;f<40;f++){
+     srf_frame();
+     own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+     // nine root passes (buf 1639), interleaved with two fork passes (buf 1335)
+     for(int span=0;span<2;span++){
+       for(int k=0;k<4;k++){ const float w[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,2.86f,1}; std::memcpy(mock_world999,w,sizeof(w)); ints[GL_ARRAY_BUFFER_BINDING][0]=1639; ints[GL_ELEMENT_ARRAY_BUFFER_BINDING][0]=712; at(GL_TEXTURE0);bt(GL_TEXTURE_2D,650); up(999);
+         capture_gl_scope rscope("root", GL_TRIANGLES, 10491); draw_chams(GL_TRIANGLES,10491,[&]{ }, &rscope, 4000+(span*4+k)*4700); if(std::strcmp(rscope.decision,"hide_own")==0)++root_hidden; }
+       { const float w[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,1.90f,1}; std::memcpy(mock_world999,w,sizeof(w)); ints[GL_ARRAY_BUFFER_BINDING][0]=1335; ints[GL_ELEMENT_ARRAY_BUFFER_BINDING][0]=1336; at(GL_TEXTURE0);bt(GL_TEXTURE_2D,628); up(999);
+         capture_gl_scope fscope("fork", GL_TRIANGLES, 864); draw_chams(GL_TRIANGLES,864,[&]{ }, &fscope, 0); ++fork_total; if(std::strcmp(fscope.decision,"hide_own")==0)++fork_hidden; }
+     }
+     { const float w[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,2.86f,1}; std::memcpy(mock_world999,w,sizeof(w)); ints[GL_ARRAY_BUFFER_BINDING][0]=1639; ints[GL_ELEMENT_ARRAY_BUFFER_BINDING][0]=712; at(GL_TEXTURE0);bt(GL_TEXTURE_2D,650); up(999);
+       capture_gl_scope rscope("root", GL_TRIANGLES, 10491); draw_chams(GL_TRIANGLES,10491,[&]{ }, &rscope, 400000); if(std::strcmp(rscope.decision,"hide_own")==0)++root_hidden; }
+   }
+   // Root passes are hidden on every frame (armed tracker, in band).
+   assert(root_hidden==40*9);
+   // The fork is bound after 30 corroborated in-span frames, then hidden.
+   assert(fork_total==80);
+   assert(fork_hidden==2*(40-30));
+   std::printf("sr_fork_end_to_end_binding_and_hide: pass (%d/%d fork draws hidden after binding)\n", fork_hidden, fork_total);
+ }
+ g_opengl_context=nullptr;own()=own_track{};pcache().count=0;icache().count=0;forks()=own_fork_track{};
  // ===== end sr_* block =====
  // If a declared camera uniform has zero data, name the actual matrix fallback.
  p.view.plain=0;p.view_m[0]=p.view_m[5]=p.view_m[10]=1;p.view_m[12]=-2;

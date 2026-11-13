@@ -185,6 +185,286 @@ namespace reshade::chams
 	constexpr int kStaleFrameLimit = 30;
 	inline own_track &own() { static thread_local own_track o; return o; }
 
+	// ======================================================== Stage 2 (F1)
+	// Own-fork fingerprint binding (capture-validated; see
+	// ff-investigation/OWNCHARACTER-FLICKER-ANALYSIS-2026-11-12.md §9).
+	//
+	// An own attachment (weapon/grip/accessory) is drawn every frame with a
+	// dedicated fingerprint — (VBO, EBO, program, count, index offset, bound
+	// texture) — strictly inside the root cluster's draw span, at a distance
+	// that swings far outside est±0.2 m (two in-vivo captures: 1.80–3.45 m
+	// around est 2.65–3.49 m; max |gap| 1.20 m; 0 of 5,634 draws beyond
+	// 1.5 m). The per-draw distance predicate therefore cannot contain it.
+	//
+	// F1 learns that fingerprint online — GL object ids are per-session, so
+	// nothing is hardcoded. A fingerprint becomes an own fork only when the
+	// own root cluster is established (stable >= 30, estimate live) AND the
+	// fingerprint was observed inside the root draw span — at least one root
+	// draw before AND after it this frame — for kForkBindFrames (30)
+	// consecutive corroborated frames with |dist - est| <= kForkLearnBand.
+	// Once bound, the fork is hidden whenever the tracker is armed and the
+	// own draw span has begun this frame, exactly like a root part.
+	//
+	// Enemy safety is by construction and by measurement. An enemy keeps a
+	// dedicated fingerprint; binding additionally requires inter-leaving
+	// between root draws for 30 consecutive corroborated frames. In the two
+	// 2026-11-12 in-vivo captures and the earlier enemy-band capture, no
+	// non-own fingerprint ever exceeded a 5-consecutive-frame streak under
+	// these rules (own fork: 100–376). Hiding a bound fork additionally
+	// requires this frame's own span to have begun (a root draw already seen
+	// this frame) and dist <= the own-distance sanity limit, so a bound id
+	// reused far from the avatar is never hidden.
+	//
+	// Never binds during cold start or in stale/unconfirmed tracker states.
+	// Buffer/id reuse and outfit changes: fingerprints whose track reaches
+	// kForkAbsentFrames (90) corroborated character-active frames without an
+	// observation are forgotten, as are all bindings on context reset and on
+	// hard tracker wipe (kStaleFrameLimit). Menu frames (no comparable
+	// character draws) and uncorroborated frames neither bind, erode absence,
+	// nor hide anything.
+	constexpr int kForkBindFrames = 30;
+	constexpr int kForkAbsentFrames = 90;
+	constexpr int kForkMaxEntries = 4;
+	constexpr int kForkMaxObs = 16;
+	constexpr float kForkLearnBand = 1.5f;   // sanity for LEARNING only; never a hide predicate
+	constexpr float kForkLearnMinDist = 1.0f;
+
+	struct own_fork_fp {
+		int program = 0, array_buffer = 0, element_buffer = 0, count = 0, texture = 0;
+		uint64_t index_offset = 0;   // byte offset into the bound element buffer; 0 when non-indexed
+	};
+	struct own_fork_entry {
+		own_fork_fp fp{};
+		int in_run_streak = 0;       // consecutive corroborated bracketed frames seen
+		int absent_streak = 0;       // consecutive corroborated character-active frames not seen
+		unsigned last_counted_frame = 0xFFFFFFFFu;
+		int seen_this_frame = 0;
+		int bound = 0;
+		int used = 0;
+	};
+	struct own_fork_obs {           // one non-root comparable character draw this frame
+		own_fork_fp fp{};
+		float dist = -1.0f, est = -1.0f;
+		unsigned seq = 0;
+	};
+	struct own_fork_track {
+		own_fork_entry entries[kForkMaxEntries];
+		own_fork_obs obs[kForkMaxObs];
+		int obs_count = 0, root_count = 0, char_draws = 0;
+		unsigned draw_seq = 0;       // per-frame sequence of measured comparable character draws
+		unsigned frame_serial = 0;   // incremented once per boundary finalise
+		unsigned first_root_seq = 0, last_root_seq = 0;
+	};
+	inline own_fork_track &forks() { static thread_local own_fork_track t; return t; }
+
+	inline bool own_fork_fp_equal(const own_fork_fp &a, const own_fork_fp &b)
+	{
+		return a.program == b.program && a.array_buffer == b.array_buffer &&
+			a.element_buffer == b.element_buffer && a.count == b.count &&
+			a.texture == b.texture && a.index_offset == b.index_offset;
+	}
+	inline own_fork_entry *own_fork_find(own_fork_track &t, const own_fork_fp &fp)
+	{
+		for (int i = 0; i < kForkMaxEntries; ++i)
+			if (t.entries[i].used != 0 && own_fork_fp_equal(t.entries[i].fp, fp)) return &t.entries[i];
+		return nullptr;
+	}
+	inline own_fork_entry *own_fork_find_free(own_fork_track &t)
+	{
+		for (int i = 0; i < kForkMaxEntries; ++i)
+			if (t.entries[i].used == 0) return &t.entries[i];
+		// Full: recycle the least-stale non-bound learning entry; keep bound entries.
+		for (int i = 0; i < kForkMaxEntries; ++i)
+			if (t.entries[i].bound == 0) { t.entries[i] = own_fork_entry{}; return &t.entries[i]; }
+		return nullptr;
+	}
+	inline void own_fork_reset() { forks() = own_fork_track{}; }
+
+	// The tracker must be established and corroborated; never during cold
+	// start or in stale/unconfirmed tracker states. Applies to binding,
+	// hiding and absence accounting alike.
+	inline bool own_fork_eligible(const settings &s, const own_track &o)
+	{
+		return s.hide_own && o.own_est > 0.0f && o.stable >= 30 && o.stale_frames == 0;
+	}
+
+	// Geometric membership in the own root cluster this frame (same distance
+	// predicate the exclusion uses; root members are hidden, or not, by the
+	// distance predicate — F1 only tracks/frames them for the draw span).
+	inline bool own_fork_root_member(const settings &s, const program_info &p, float distance, const own_track &o)
+	{
+		return std::strcmp(p.dist_source, "MATRIX_VP") != 0 && distance >= 0.0f &&
+			o.own_est > 0.0f && o.stable >= 30 && o.stale_frames == 0 &&
+			distance < s.own_distance && std::fabs(distance - o.own_est) <= 0.2f;
+	}
+
+	inline own_fork_fp own_fork_query_fp(GLint program, GLsizei count, uint64_t index_offset)
+	{
+		own_fork_fp fp{};
+		fp.program = program; fp.count = count;
+		GLint arr = 0, ele = 0, tex = 0;
+		if (gl.GetIntegerv)
+		{
+			gl.GetIntegerv(GL_ARRAY_BUFFER_BINDING, &arr);
+			gl.GetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &ele);
+			gl.GetIntegerv(GL_TEXTURE_BINDING_2D, &tex);
+		}
+		fp.array_buffer = arr; fp.element_buffer = ele; fp.texture = tex;
+		fp.index_offset = (ele != 0) ? index_offset : 0;
+		return fp;
+	}
+
+	// Hide gate for a bound fork: armed tracker AND the own draw span having
+	// begun this frame (a root draw already seen) AND distance inside the
+	// own-distance sanity limit (deflects bound-id reuse far from the
+	// avatar). Never hides on distance alone; never hides before the span
+	// begins; RC-3 (whole avatar out of band) and stale frames correctly
+	// leave the fork visible.
+	inline bool own_fork_hide_gate(const settings &s, float distance, const own_track &o, const own_fork_track &t)
+	{
+		if (!own_fork_eligible(s, o)) return false;
+		if (t.root_count <= 0) return false;             // own span has not begun this frame
+		return std::isfinite(distance) && distance > 0.0f && distance <= s.own_distance;
+	}
+	// Per-draw measurement for one comparable character draw. Returns true when
+	// the draw is a bound own fork that must be hidden now (caller suppresses
+	// the chams passes exactly as it does for the distance predicate).
+	// Test/debug surface for the hide gate + bound-membership check. The
+	// production path inlines the same decision inside own_fork_note_draw.
+	inline bool own_fork_should_hide(const settings &s, float distance, const own_track &o,
+			const own_fork_track &t, const own_fork_fp &fp)
+	{
+		if (!own_fork_hide_gate(s, distance, o, t)) return false;
+		for (int i = 0; i < kForkMaxEntries; ++i)
+			if (t.entries[i].used != 0 && t.entries[i].bound != 0 && own_fork_fp_equal(t.entries[i].fp, fp)) return true;
+		return false;
+	}
+	inline bool own_fork_note_draw(const settings &s, const program_info &p, float distance,
+		const own_track &o, GLint program, GLsizei count, uint64_t index_offset)
+	{
+		own_fork_track &t = forks();
+		if (o.stale_frames != 0)
+			return false;   // uncorroborated frame: F1 inert, whole avatar pops (R1 semantics)
+		const unsigned seq = t.draw_seq++;
+		++t.char_draws;
+		if (own_fork_root_member(s, p, distance, o))
+		{
+			if (t.root_count == 0 || seq < t.first_root_seq) t.first_root_seq = seq;
+			if (t.root_count == 0 || seq > t.last_root_seq) t.last_root_seq = seq;
+			++t.root_count;
+			return false;   // root members are hidden, or not, by the distance predicate
+		}
+		if (!std::isfinite(distance) || distance <= 0.0f)
+			return false;
+		const own_fork_fp fp = own_fork_query_fp(program, count, index_offset);
+		// A known fingerprint counts as seen even when bound or not drawable
+		// right now (span not begun / distance out of sanity): absence means
+		// "vanished from the frame", not "not hidden this frame".
+		own_fork_entry *unbound = nullptr;
+		for (int i = 0; i < kForkMaxEntries; ++i)
+		{
+			own_fork_entry &e = t.entries[i];
+			if (e.used == 0 || !own_fork_fp_equal(e.fp, fp)) continue;
+			if (e.bound != 0)
+			{
+				e.seen_this_frame = 1;
+				e.absent_streak = 0;
+				if (own_fork_hide_gate(s, distance, o, t))
+					return true;
+				return false;   // bound but not drawable now (span not begun / out of cap): counted as seen
+			}
+			unbound = &e;
+			break;   // unbound learning entry: fall through to obs recording
+		}
+		if (t.obs_count < kForkMaxObs)
+		{
+			own_fork_obs &ob = t.obs[t.obs_count++];
+			ob.fp = fp; ob.dist = distance; ob.est = o.own_est; ob.seq = seq;
+		}
+		else if (unbound != nullptr)
+		{
+			// The observation buffer is full, so this tracked candidate cannot be
+			// recorded this frame. Do not let the dropped observation silently
+			// preserve an in-run streak: count the fingerprint as seen (no absence
+			// accrues), break the streak, and never let it count toward (much less
+			// complete) a binding run.
+			unbound->seen_this_frame = 1;
+			unbound->in_run_streak = 0;
+			unbound->absent_streak = 0;
+		}
+		return false;
+	}
+
+	// Boundary finalise for F1. Runs once per frame at the same point the
+	// tracker closes the frame (reset_frame_caches). Decides — with the
+	// corroboration outcome of the closing frame — whether this frame
+	// advances binding streaks, breaks them, or leaves them untouched.
+	// Menu frames (no comparable draws) and uncorroborated frames erode
+	// nothing: absence is only counted on corroborated character-active
+	// frames, and streaks only advance on corroborated frames.
+	inline void own_fork_frame_boundary()
+	{
+		own_fork_track &t = forks();
+		const own_track &o = own();
+		const settings &s = g_settings;
+		// Post-update corroboration of the frame that just closed: hiding was
+		// armed for this frame iff the tracker learned on it.
+		const bool corroborated = o.stale_frames == 0;
+		const bool active = t.char_draws > 0;
+		const bool eligible = own_fork_eligible(s, o);
+		++t.frame_serial;
+		for (int i = 0; i < t.obs_count; ++i)
+		{
+			const own_fork_obs &ob = t.obs[i];
+			own_fork_entry *e = own_fork_find(t, ob.fp);
+			const bool sane = std::isfinite(ob.dist) && std::isfinite(ob.est) &&
+				std::fabs(ob.dist - ob.est) <= kForkLearnBand && ob.dist >= kForkLearnMinDist && ob.est > 0.0f;
+			const bool bracketed = t.root_count > 0 && ob.seq > t.first_root_seq && ob.seq < t.last_root_seq;
+			if (eligible && bracketed && sane)
+			{
+				if (e == nullptr)
+				{
+					e = own_fork_find_free(t);
+					if (e != nullptr) { *e = own_fork_entry{}; e->fp = ob.fp; e->used = 1; }
+				}
+				if (e != nullptr)
+				{
+					if (e->last_counted_frame != t.frame_serial) {
+						e->last_counted_frame = t.frame_serial;
+						if (e->in_run_streak < kForkBindFrames) ++e->in_run_streak;
+						if (e->in_run_streak >= kForkBindFrames) e->bound = 1;
+					}
+					e->absent_streak = 0;
+					e->seen_this_frame = 1;
+				}
+			}
+			else if (eligible)
+			{
+				// Observed in a corroborated frame but not as a bracketed,
+				// plausible attachment: consecutiveness breaks. Untracked
+				// fingerprints seen out-of-window are ignored entirely.
+				if (e != nullptr) { e->in_run_streak = 0; e->absent_streak = 0; e->seen_this_frame = 1; }
+			}
+			else if (e != nullptr)
+			{
+				e->seen_this_frame = 1;   // uncorroborated frame: seen, streaks untouched
+			}
+		}
+		for (int i = 0; i < kForkMaxEntries; ++i)
+		{
+			own_fork_entry &e = t.entries[i];
+			if (e.used == 0) continue;
+			if (e.seen_this_frame != 0) { e.seen_this_frame = 0; continue; }
+			if (active && corroborated)
+			{
+				++e.absent_streak;
+				if (e.absent_streak > kForkAbsentFrames) e = own_fork_entry{};   // unbind; slot recycled
+			}
+		}
+		t.obs_count = 0; t.root_count = 0; t.char_draws = 0; t.draw_seq = 0;
+		t.first_root_seq = 0; t.last_root_seq = 0;
+	}
+
 	// Record one comparable character-draw distance for this frame. O(1),
 	// drop-on-full; the frame minimum is still tracked separately.
 	inline void note_character_distance(float dist)
@@ -360,6 +640,7 @@ namespace reshade::chams
 				o.stable  = 0;
 				o.own_est = -1.0f;
 				o.stale_frames = 0;
+				own_fork_reset();   // a forgotten reference never keeps stale fingerprints
 			}
 			// else: keep candidate/estimate/stability; hiding is suspended while
 			// stale_frames > 0 (see own_distance_excludes).
@@ -389,6 +670,7 @@ namespace reshade::chams
 	inline void reset_frame_caches()
 	{
 		update_own_estimate();
+		own_fork_frame_boundary();
 
 		pcache().count = 0;
 		icache().count = 0;
@@ -418,6 +700,7 @@ namespace reshade::chams
 			last_device = g_opengl_context;
 			last_native_context = native_context;
 			own() = own_track{};
+			own_fork_reset();
 			pcache().count = 0;
 			icache().count = 0;
 			last_frame = frame;
@@ -1552,7 +1835,10 @@ namespace reshade::chams
 
 	// --------------------------------------------------------------- wrapper
 	template <typename F>
-	inline void draw_chams(GLenum mode, GLsizei count, F &&real_draw, capture_gl_scope *cap = nullptr)
+	// index_offset: raw `indices` pointer value when an element buffer is bound
+	// (GL treats it as a byte offset), 0 for non-indexed draws. Only feeds the
+	// Stage 2 fingerprint; never used for the distance predicate.
+	inline void draw_chams(GLenum mode, GLsizei count, F &&real_draw, capture_gl_scope *cap = nullptr, uint64_t index_offset = 0)
 	{
 		if (g_opengl_context != nullptr)
 			ensure_loaded();
@@ -1690,6 +1976,20 @@ namespace reshade::chams
 			note_character_distance(dist);
 			if (dist < own().frame_min)
 				own().frame_min = dist;
+		}
+
+		// Stage 2 (F1): a bound own-attachment fork leaves the estimate band
+		// entirely; hiding is gated on its learned fingerprint plus this
+		// frame's in-span position (never on co-rendering alone). Root-member
+		// bookkeeping happens inside the call as well, so it precedes the
+		// distance predicate without changing its outcome.
+		if (s.hide_own && comparable_distance && dist > 0.0f &&
+			own_fork_note_draw(s, *info, dist, own(), program, count, index_offset))
+		{
+			if (diag != nullptr) ++diag->own_hidden;
+			if (cap) cap->decision = "hide_own";
+			real_draw();
+			return;
 		}
 
 		if (own_distance_excludes(s, *info, dist, own()))

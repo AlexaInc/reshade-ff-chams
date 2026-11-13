@@ -1393,7 +1393,7 @@ extern "C" void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type,
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glDrawElements);
-	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, count, type, indices); }, &chams_capture_scope);
+	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, count, type, indices); }, &chams_capture_scope, reinterpret_cast<uint64_t>(reinterpret_cast<uintptr_t>(indices)));
 }
 #endif
 
@@ -3180,7 +3180,7 @@ void APIENTRY glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, c
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glDrawElementsInstanced);
-	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, count, type, indices, primcount); }, &chams_capture_scope);
+	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, count, type, indices, primcount); }, &chams_capture_scope, reinterpret_cast<uint64_t>(reinterpret_cast<uintptr_t>(indices)));
 }
 #endif
 
@@ -3304,7 +3304,7 @@ void APIENTRY glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, 
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glDrawElementsBaseVertex);
-	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, count, type, indices, basevertex); }, &chams_capture_scope);
+	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, count, type, indices, basevertex); }, &chams_capture_scope, reinterpret_cast<uint64_t>(reinterpret_cast<uintptr_t>(indices)));
 }
 void APIENTRY glDrawRangeElementsBaseVertex(GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const GLvoid *indices, GLint basevertex)
 {
@@ -3348,7 +3348,7 @@ void APIENTRY glDrawElementsInstancedBaseVertex(GLenum mode, GLsizei count, GLen
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glDrawElementsInstancedBaseVertex);
-	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, count, type, indices, primcount, basevertex); }, &chams_capture_scope);
+	reshade::chams::draw_chams(mode, count, [&]() { trampoline(mode, count, type, indices, primcount, basevertex); }, &chams_capture_scope, reinterpret_cast<uint64_t>(reinterpret_cast<uintptr_t>(indices)));
 }
 void APIENTRY glMultiDrawElementsBaseVertex(GLenum mode, const GLsizei *count, GLenum type, const GLvoid *const *indices, GLsizei drawcount, const GLint *basevertex)
 {
