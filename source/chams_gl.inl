@@ -832,12 +832,12 @@ namespace reshade::chams
 	// One match is enough - that is the "wide" rule, and it is why a new skin
 	// or a new cloth shader is picked up without waiting for an update.
 	static const char *const k_chara_tokens[] = {
-		_CharaLightIntensity,
-		_BackLightDir, _BackLightColor,
-		_SkinBaseColor, _DiffIntensity,
-		_SpecularmapGlossA, _StretchRatio, _ColorEffectParam,
-		k2DEs3, ZL2D3, gMx2DH, 42dOK
-};
+		"_CharaLightIntensity",
+		"_BackLightDir", "_BackLightColor",
+		"_SkinBaseColor", "_DiffIntensity",
+		"_SpecularmapGlossA", "_StretchRatio", "_ColorEffectParam",
+		"k2DEs3", "ZL2D3", "gMx2DH", "42dOK"
+	};
 
 	// Skinned meshes always carry one of these; nothing static does. They are
 	// the only way to catch a bundle whose shader family we have never seen.
@@ -885,11 +885,11 @@ namespace reshade::chams
 	}
 
 	// EXCLUSION BLOCK: Environmental / Collider / Non-character entities
-static const char *const k_exclusion_tokens[] = {
-		r0Cp5O2D, fakehipporeformbldcollider, gloo, plane, car, horse, lootbox
-};
+	static const char *const k_exclusion_tokens[] = {
+		"r0Cp5O2D", "fakehipporeformbldcollider", "gloo", "plane", "car", "horse", "lootbox"
+	};
 
-// which avatar token this program carries (for the dump / for the log)
+	// which avatar token this program carries (for the dump / for the log)
 	inline const char *character_token(GLint program)
 	{
 		if (gl.GetUniformLocation == nullptr)
@@ -901,62 +901,58 @@ static const char *const k_exclusion_tokens[] = {
 	}
 
 	inline bool program_is_character(GLint program)
-{
-	if (program == 0 || gl.GetUniformLocation == nullptr)
-		return false;
-
-	program_cache &c = pcache();
-	for (int i = 0; i < c.count; ++i)
-		if (c.e[i].program == program && c.e[i].detect_mode == g_settings.detect_mode)
-			return c.e[i].is_character;
-
-	// EXCLUSION BLOCK: Environmental / Collider / Non-character entities
-	const char *const k_exclusion_tokens[] = {
-		r0Cp5O2D, fakehipporeformbldcollider, gloo, plane, car, horse, lootbox
-	};
-	bool is_excluded = false;
-	for (const char *name : k_exclusion_tokens)
-		if (gl.GetUniformLocation(static_cast<GLuint>(program), name) != -1)
-			is_excluded = true;
-
-	if (is_excluded)
-		return false;
-
-	const bool has_chara = gl.GetUniformLocation(static_cast<GLuint>(program),
-	                                             k_character_uniform) != -1;
-
-	bool has_wide = has_chara;
-	if (!has_wide)
-		has_wide = character_token(program)[0] != '-';
-	if (!has_wide)
-		has_wide = program_has_cel_token(program);   // Stage 3 FIX B: cel/toon family
-
-	bool has = false;
-	switch (g_settings.detect_mode)
 	{
-	case 0:  // strict: exactly what the original DLL matched
-		has = has_chara;
-		break;
-	case 2:  // skinned: any bone matrix uniform (unknown skins / bundles)
-		has = program_has_skin_uniform(program);
-		break;
-	case 3:  // all
-		has = has_wide || program_has_skin_uniform(program);
-		break;
-	case 1:  // wide (default): the avatar token set above
-	default:
-		has = has_wide;
-		break;
-	}
+		if (program == 0 || gl.GetUniformLocation == nullptr)
+			return false;
 
-	if (c.count < 32) {
-		c.e[c.count].program = program;
-		c.e[c.count].detect_mode = g_settings.detect_mode;
-		c.e[c.count].is_character = has;
-		++c.count;
-	}
-	return has;
-}
+		program_cache &c = pcache();
+		for (int i = 0; i < c.count; ++i)
+			if (c.e[i].program == program && c.e[i].detect_mode == g_settings.detect_mode)
+				return c.e[i].is_character;
+
+		// EXCLUSION BLOCK: Environmental / Collider / Non-character entities
+		bool is_excluded = false;
+		for (const char *name : k_exclusion_tokens)
+			if (gl.GetUniformLocation(static_cast<GLuint>(program), name) != -1)
+				is_excluded = true;
+
+		if (is_excluded)
+			return false;
+
+		const bool has_chara = gl.GetUniformLocation(static_cast<GLuint>(program),
+		                                             k_character_uniform) != -1;
+
+		bool has_wide = has_chara;
+		if (!has_wide)
+			has_wide = character_token(program)[0] != '-';
+		if (!has_wide)
+			has_wide = program_has_cel_token(program);   // Stage 3 FIX B: cel/toon family
+
+		bool has = false;
+		switch (g_settings.detect_mode)
+		{
+		case 0:  // strict: exactly what the original DLL matched
+			has = has_chara;
+			break;
+		case 2:  // skinned: any bone matrix uniform (unknown skins / bundles)
+			has = program_has_skin_uniform(program);
+			break;
+		case 3:  // all
+			has = has_wide || program_has_skin_uniform(program);
+			break;
+		case 1:  // wide (default): the avatar token set above
+		default:
+			has = has_wide;
+			break;
+		}
+
+		if (c.count < 32) {
+			c.e[c.count].program = program;
+			c.e[c.count].detect_mode = g_settings.detect_mode;
+			c.e[c.count].is_character = has;
+			++c.count;
+		}
+		return has;
 	}
 
 	// try every spelling of a matrix uniform, array-of-vec4 style first
