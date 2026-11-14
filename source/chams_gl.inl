@@ -835,8 +835,7 @@ namespace reshade::chams
 		"_CharaLightIntensity",
 		"_BackLightDir", "_BackLightColor",
 		"_SkinBaseColor", "_DiffIntensity",
-		"_SpecularmapGlossA", "_StretchRatio", "_ColorEffectParam",
-		"k2DEs3", "ZL2D3", "gMx2DH", "42dOK"
+		"_SpecularmapGlossA", "_StretchRatio", "_ColorEffectParam"
 	};
 
 	// Skinned meshes always carry one of these; nothing static does. They are
@@ -884,11 +883,6 @@ namespace reshade::chams
 		return false;
 	}
 
-	// EXCLUSION BLOCK: Environmental / Collider / Non-character entities
-	static const char *const k_exclusion_tokens[] = {
-		"r0Cp5O2D", "fakehipporeformbldcollider", "gloo", "plane", "car", "horse", "lootbox"
-	};
-
 	// which avatar token this program carries (for the dump / for the log)
 	inline const char *character_token(GLint program)
 	{
@@ -910,15 +904,6 @@ namespace reshade::chams
 			if (c.e[i].program == program && c.e[i].detect_mode == g_settings.detect_mode)
 				return c.e[i].is_character;
 
-		// EXCLUSION BLOCK: Environmental / Collider / Non-character entities
-		bool is_excluded = false;
-		for (const char *name : k_exclusion_tokens)
-			if (gl.GetUniformLocation(static_cast<GLuint>(program), name) != -1)
-				is_excluded = true;
-
-		if (is_excluded)
-			return false;
-
 		const bool has_chara = gl.GetUniformLocation(static_cast<GLuint>(program),
 		                                             k_character_uniform) != -1;
 
@@ -931,8 +916,8 @@ namespace reshade::chams
 		bool has = false;
 		switch (g_settings.detect_mode)
 		{
-		case 0:  // strict: exactly what the original DLL matched
-			has = has_chara;
+		case 0:  // strict: original DLL match + cel/toon family (Stage 7: Naruto/2D cel passes carry no chara token)
+			has = has_chara || program_has_cel_token(program);
 			break;
 		case 2:  // skinned: any bone matrix uniform (unknown skins / bundles)
 			has = program_has_skin_uniform(program);
