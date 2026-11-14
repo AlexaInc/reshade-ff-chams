@@ -266,6 +266,17 @@ namespace reshade::chams
 	// (fixed-gap max 0.719 m) and cuts single-draw flicker runs by ~99%.
 	constexpr int kHystMaxEntries = 16;
 	constexpr float kHystReleaseBand = 0.75f;  // release threshold (acquire band is 0.2)
+	// Stage 9 (Variant A): one uncorroborated frame (outlier_skipped sets
+	// stale_frames = 1 when the modal cluster is displaced > 0.3 m, which
+	// happens routinely while the avatar moves) must not pop an already
+	// latched part visible. The estimate is retained on such a frame and the
+	// part was confirmed own at latch time, so keep it hidden while it stays
+	// inside the release band. Applies to latched parts only: latch
+	// acquisition, root-member identification and the fork (F1) logic all
+	// still require stale_frames == 0. Replay-validated on the real-device
+	// capture: transitions unchanged (132), single-direct runs 11 -> 6, 31
+	// visible draws removed. K = 2 is identical to K = 1, so 1 is minimal.
+	constexpr int kHystMaxStale = 1;
 
 	struct own_fork_fp {
 		int program = 0, array_buffer = 0, element_buffer = 0, count = 0, texture = 0;
@@ -394,10 +405,13 @@ namespace reshade::chams
 	// Hysteresis hide gate: same arming conditions as own_distance_excludes
 	// but with the release band. Only latched (previously-confirmed-own)
 	// parts reach here; the caller checks the latch.
+	// Stage 9 (Variant A): kHystMaxStale lets a *latched* part stay hidden
+	// through a single uncorroborated frame. Unlatched parts never reach this
+	// gate, so the stale tolerance is not a global widening.
 	inline bool own_hyst_gate(const settings &s, const program_info &p, float distance, const own_track &o)
 	{
 		return s.hide_own && std::strcmp(p.dist_source, "MATRIX_VP") != 0 && distance >= 0.0f &&
-			o.own_est > 0.0f && o.stable >= 30 && o.stale_frames == 0 &&
+			o.own_est > 0.0f && o.stable >= 30 && o.stale_frames <= kHystMaxStale &&
 			distance < s.own_distance && std::fabs(distance - o.own_est) <= kHystReleaseBand;
 	}
 
@@ -431,7 +445,27 @@ namespace reshade::chams
 	{
 		own_fork_track &t = forks();
 		if (o.stale_frames != 0)
+		{
+			// Stage 9 (Variant A): on a *brief* uncorroborated frame, keep an
+			// already-latched part hidden instead of popping the whole avatar
+			// visible for one frame. Release still fires on a genuine large gap,
+			// so a part that really moved away stops being treated as own.
+			// Deliberately no fork bookkeeping here: draw_seq / char_draws /
+			// root_count / obs stay untouched on an uncorroborated frame, so F1
+			// remains inert (R1 semantics preserved) and no latch is acquired.
+			if (o.stale_frames <= kHystMaxStale && std::isfinite(distance) && distance > 0.0f)
+			{
+				const own_fork_fp fp = own_fork_query_fp(program, count, index_offset);
+				if (own_hyst_latched(t, fp))
+				{
+					if (std::fabs(distance - o.own_est) > kHystReleaseBand)
+						own_hyst_release(t, fp);
+					else if (own_hyst_gate(s, p, distance, o))
+						return true;
+				}
+			}
 			return false;   // uncorroborated frame: F1 inert, whole avatar pops (R1 semantics)
+		}
 		const unsigned seq = t.draw_seq++;
 		++t.char_draws;
 		if (own_fork_root_member(s, p, distance, o))

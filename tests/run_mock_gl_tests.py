@@ -994,14 +994,16 @@ int main(int argc, char **argv) {
    assert(!srf_note(3.36f,2001,2002,282,10491,650,4000));
  }
  std::printf("sr_hyst_no_global_widening: pass\n");
- // --- sr_hyst_stale_suspends_but_retains: stale frame does not hide, but the latch survives (R1 grace). ---
+ // --- sr_hyst_stale_suspends_but_retains: an *extended* uncorroborated frame ---
+ // (stale 3 > kHystMaxStale) still pops, but the latch survives (R1 grace).
+ // Brief stale (<= kHystMaxStale) hiding is covered by sr_hyst_brief_stale_*.
  {
    g_opengl_context=reinterpret_cast<void *>(0x8000f);g_frame_id=20000;touch_frame();
    own()=own_track{};pcache().count=0;icache().count=0;forks()=own_fork_track{};
    g_settings=settings{};g_settings.hide_own=true;g_settings.own_distance=4.9f;g_settings.detect_mode=1;g_settings.render_mode=1;g_settings.enabled=true;
    own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
    assert(!srf_note(2.86f,1639,712,282,10491,650,4000));   // latch
-   own().stale_frames=3;                                     // stale: gate closed
+   own().stale_frames=3;                                     // extended stale: beyond kHystMaxStale
    assert(!srf_note(3.36f,1639,712,282,10491,650,4000));   // not hidden while stale
    own().stale_frames=0;                                     // corroborated again
    assert(srf_note(3.36f,1639,712,282,10491,650,4000));    // latch retained: hidden again
@@ -1030,6 +1032,85 @@ int main(int argc, char **argv) {
    assert(!srf_note(2.76f,1639,712,282,10491,650,4000));   // gap 0.76: released, not hidden
  }
  std::printf("sr_hyst_release_band_edge: pass\n");
+ // --- sr_hyst_brief_stale_keeps_hidden: Stage 9 Variant A. A single uncorroborated
+ // frame (stale 1 <= kHystMaxStale) must not pop an already-latched part visible.
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x80012);g_frame_id=23000;touch_frame();
+   own()=own_track{};pcache().count=0;icache().count=0;forks()=own_fork_track{};
+   g_settings=settings{};g_settings.hide_own=true;g_settings.own_distance=4.9f;g_settings.detect_mode=1;g_settings.render_mode=1;g_settings.enabled=true;
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   assert(!srf_note(2.86f,1639,712,282,10491,650,4000));   // root member at gap 0 -> latched
+   own().stale_frames=1;                                    // one outlier_skipped frame
+   assert(srf_note(3.36f,1639,712,282,10491,650,4000));    // gap 0.5, latched -> stays hidden
+   own().stale_frames=0;                                    // corroborated again
+   assert(srf_note(3.36f,1639,712,282,10491,650,4000));    // still hidden
+ }
+ std::printf("sr_hyst_brief_stale_keeps_hidden: pass\n");
+ // --- sr_hyst_brief_stale_still_releases_far_gap: brief stale does not suspend the
+ // release band; a genuine large gap unlatches the part.
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x80013);g_frame_id=24000;touch_frame();
+   own()=own_track{};pcache().count=0;icache().count=0;forks()=own_fork_track{};
+   g_settings=settings{};g_settings.hide_own=true;g_settings.own_distance=4.9f;g_settings.detect_mode=1;g_settings.render_mode=1;g_settings.enabled=true;
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   assert(!srf_note(2.86f,1639,712,282,10491,650,4000));   // latch
+   own().stale_frames=1;
+   assert(!srf_note(3.86f,1639,712,282,10491,650,4000));   // gap 1.0 > release -> not hidden
+   bool still=false; for(int i=0;i<kHystMaxEntries;i++) if(forks().hyst[i].used&&forks().hyst[i].latched) still=true;
+   assert(!still);                                          // latch released on the stale frame
+   own().stale_frames=0;
+   assert(!srf_note(3.36f,1639,712,282,10491,650,4000));   // no latch -> gap 0.5 not hidden
+ }
+ std::printf("sr_hyst_brief_stale_still_releases_far_gap: pass\n");
+ // --- sr_hyst_brief_stale_acquires_no_latch: the stale tolerance applies only to
+ // already-latched parts; nothing may latch while uncorroborated (no global widening).
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x80014);g_frame_id=25000;touch_frame();
+   own()=own_track{};pcache().count=0;icache().count=0;forks()=own_fork_track{};
+   g_settings=settings{};g_settings.hide_own=true;g_settings.own_distance=4.9f;g_settings.detect_mode=1;g_settings.render_mode=1;g_settings.enabled=true;
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=1;
+   assert(!srf_note(2.86f,1639,712,282,10491,650,4000));   // gap 0 but uncorroborated -> not hidden
+   bool latched=false; for(int i=0;i<kHystMaxEntries;i++) if(forks().hyst[i].used&&forks().hyst[i].latched) latched=true;
+   assert(!latched);                                        // no latch acquired during stale
+   own().stale_frames=0;
+   assert(!srf_note(2.86f,1639,712,282,10491,650,4000));   // corroborated root member -> latches
+   latched=false; for(int i=0;i<kHystMaxEntries;i++) if(forks().hyst[i].used&&forks().hyst[i].latched) latched=true;
+   assert(latched);
+   assert(srf_note(3.36f,1639,712,282,10491,650,4000));    // now the latch hides gap 0.5
+ }
+ std::printf("sr_hyst_brief_stale_acquires_no_latch: pass\n");
+ // --- sr_hyst_brief_stale_fork_inert: the stale tolerance must not revive F1.
+ // No fork bookkeeping (draw_seq / char_draws / root_count / obs) on such a frame.
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x80015);g_frame_id=26000;touch_frame();
+   own()=own_track{};pcache().count=0;icache().count=0;forks()=own_fork_track{};
+   g_settings=settings{};g_settings.hide_own=true;g_settings.own_distance=4.9f;g_settings.detect_mode=1;g_settings.render_mode=1;g_settings.enabled=true;
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   assert(!srf_note(2.86f,1639,712,282,10491,650,4000));   // latch (corroborated: bookkeeping runs)
+   const unsigned seq0=forks().draw_seq; const int cd0=forks().char_draws;
+   const int rc0=forks().root_count; const int oc0=forks().obs_count;
+   own().stale_frames=1;
+   assert(srf_note(3.36f,1639,712,282,10491,650,4000));    // hidden via latch
+   assert(forks().draw_seq==seq0 && forks().char_draws==cd0);   // F1 untouched
+   assert(forks().root_count==rc0 && forks().obs_count==oc0);
+   assert(!srf_fork(1.90f));                                // an unlatched fork draw stays visible
+   assert(forks().draw_seq==seq0 && forks().obs_count==oc0);
+ }
+ std::printf("sr_hyst_brief_stale_fork_inert: pass\n");
+ // --- sr_hyst_brief_stale_enemy_never_hidden: a far draw (enemy range) is never
+ // latched and never hidden, on a corroborated or an uncorroborated frame alike.
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x80016);g_frame_id=27000;touch_frame();
+   own()=own_track{};pcache().count=0;icache().count=0;forks()=own_fork_track{};
+   g_settings=settings{};g_settings.hide_own=true;g_settings.own_distance=4.9f;g_settings.detect_mode=1;g_settings.render_mode=1;g_settings.enabled=true;
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   assert(!srf_note(297.0f,2001,2002,282,10491,650,4000)); // enemy: out of cap, never latched
+   own().stale_frames=1;
+   assert(!srf_note(297.0f,2001,2002,282,10491,650,4000)); // still visible on a brief stale frame
+   bool latched=false; for(int i=0;i<kHystMaxEntries;i++) if(forks().hyst[i].used&&forks().hyst[i].latched) latched=true;
+   assert(!latched);
+ }
+ std::printf("sr_hyst_brief_stale_enemy_never_hidden: pass\n");
  g_opengl_context=nullptr;own()=own_track{};pcache().count=0;icache().count=0;forks()=own_fork_track{};
  // ===== end sr_* block =====
  // If a declared camera uniform has zero data, name the actual matrix fallback.
