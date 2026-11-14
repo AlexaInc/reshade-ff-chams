@@ -147,8 +147,11 @@ int main(int argc, char **argv) {
  pcache().count=0;g_settings.detect_mode=0;assert(!program_is_character(123));
  g_settings.detect_mode=1;assert(program_is_character(123));
  g_settings.detect_mode=0;assert(!program_is_character(123));
- // Cel/toon family (Stage 3 FIX B): classified in wide (1) and all (3) modes
- // exactly like the avatar tokens; strict (0) and skinned (2) unchanged.
+ // Cel/toon family (Stage 3 FIX B, Stage 7): classified in strict (0), wide (1)
+ // and all (3) modes exactly like the avatar tokens; skinned (2) unchanged
+ // (bone-matrix only). Stage 7 runtime ground truth: cel tokens occur only on
+ // character passes, so Strict must detect them (Naruto/2D cel passes carry no
+ // chara token and were previously missed in Strict).
  pcache().count=0;
  g_settings.detect_mode=1;
  assert(program_is_character(777));  // cel ramp body (_ShadowThreshold)
@@ -156,7 +159,7 @@ int main(int argc, char **argv) {
  assert(program_is_character(779));  // MToon-style body (_ShadeColor)
  assert(!program_is_character(780)); // plain specular lit prop: no toon/avatar/bone tokens
  g_settings.detect_mode=0;
- assert(!program_is_character(777)); assert(!program_is_character(778)); assert(!program_is_character(779));
+ assert(program_is_character(777)); assert(program_is_character(778)); assert(program_is_character(779));
  g_settings.detect_mode=2;
  assert(!program_is_character(777)); assert(!program_is_character(778)); assert(!program_is_character(779));
  g_settings.detect_mode=3;
