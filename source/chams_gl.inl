@@ -254,6 +254,19 @@ namespace reshade::chams
 	constexpr float kForkLearnBand = 1.5f;   // sanity for LEARNING only; never a hide predicate
 	constexpr float kForkLearnMinDist = 1.0f;
 
+	// Stage 8: per-part hysteresis. The acquire band (0.2 m, in
+	// own_distance_excludes / own_fork_root_member) is narrower than the
+	// bone-swing variance of the own model, so one part per frame typically
+	// oscillates across the band edge (hide_own x3 / direct x1 flicker).
+	// A root part hidden by the distance predicate latches its fingerprint;
+	// while latched it stays hidden until its gap exceeds kHystReleaseBand.
+	// Only fingerprints confirmed own (gap <= 0.2 while armed) latch, so a
+	// foreign object is never given the wide band. Replay-validated on the
+	// Naruto capture: release 0.75 m covers the observed root bone-swing
+	// (fixed-gap max 0.719 m) and cuts single-draw flicker runs by ~99%.
+	constexpr int kHystMaxEntries = 16;
+	constexpr float kHystReleaseBand = 0.75f;  // release threshold (acquire band is 0.2)
+
 	struct own_fork_fp {
 		int program = 0, array_buffer = 0, element_buffer = 0, count = 0, texture = 0;
 		uint64_t index_offset = 0;   // byte offset into the bound element buffer; 0 when non-indexed
@@ -272,8 +285,14 @@ namespace reshade::chams
 		float dist = -1.0f, est = -1.0f;
 		unsigned seq = 0;
 	};
+	struct own_hyst_entry {           // one latched root-part fingerprint (Stage 8)
+		own_fork_fp fp{};
+		int used = 0;
+		int latched = 0;
+	};
 	struct own_fork_track {
 		own_fork_entry entries[kForkMaxEntries];
+		own_hyst_entry hyst[kHystMaxEntries];
 		own_fork_obs obs[kForkMaxObs];
 		int obs_count = 0, root_count = 0, char_draws = 0;
 		unsigned draw_seq = 0;       // per-frame sequence of measured comparable character draws
@@ -339,6 +358,49 @@ namespace reshade::chams
 		return fp;
 	}
 
+	// Stage 8 hysteresis latch helpers. The latch set lives in own_fork_track
+	// so own_fork_reset() (tracker wipe / context change) clears it with the
+	// fork bindings. No frame-boundary logic: the latch is managed per draw.
+	inline own_hyst_entry *own_hyst_find(own_fork_track &t, const own_fork_fp &fp)
+	{
+		for (int i = 0; i < kHystMaxEntries; ++i)
+			if (t.hyst[i].used != 0 && own_fork_fp_equal(t.hyst[i].fp, fp)) return &t.hyst[i];
+		return nullptr;
+	}
+	inline void own_hyst_latch(own_fork_track &t, const own_fork_fp &fp)
+	{
+		own_hyst_entry *e = own_hyst_find(t, fp);
+		if (e == nullptr)
+		{
+			for (int i = 0; i < kHystMaxEntries; ++i)
+				if (t.hyst[i].used == 0) { e = &t.hyst[i]; break; }
+			if (e == nullptr) return;  // full: skip latching (safe fallback: part flickers)
+			e->fp = fp; e->used = 1;
+		}
+		e->latched = 1;
+	}
+	inline bool own_hyst_latched(const own_fork_track &t, const own_fork_fp &fp)
+	{
+		const own_hyst_entry *e = nullptr;
+		for (int i = 0; i < kHystMaxEntries; ++i)
+			if (t.hyst[i].used != 0 && t.hyst[i].latched != 0 && own_fork_fp_equal(t.hyst[i].fp, fp)) { e = &t.hyst[i]; break; }
+		return e != nullptr;
+	}
+	inline void own_hyst_release(own_fork_track &t, const own_fork_fp &fp)
+	{
+		own_hyst_entry *e = own_hyst_find(t, fp);
+		if (e != nullptr) e->latched = 0;
+	}
+	// Hysteresis hide gate: same arming conditions as own_distance_excludes
+	// but with the release band. Only latched (previously-confirmed-own)
+	// parts reach here; the caller checks the latch.
+	inline bool own_hyst_gate(const settings &s, const program_info &p, float distance, const own_track &o)
+	{
+		return s.hide_own && std::strcmp(p.dist_source, "MATRIX_VP") != 0 && distance >= 0.0f &&
+			o.own_est > 0.0f && o.stable >= 30 && o.stale_frames == 0 &&
+			distance < s.own_distance && std::fabs(distance - o.own_est) <= kHystReleaseBand;
+	}
+
 	// Hide gate for a bound fork: armed tracker AND the own draw span having
 	// begun this frame (a root draw already seen) AND distance inside the
 	// own-distance sanity limit (deflects bound-id reuse far from the
@@ -377,11 +439,26 @@ namespace reshade::chams
 			if (t.root_count == 0 || seq < t.first_root_seq) t.first_root_seq = seq;
 			if (t.root_count == 0 || seq > t.last_root_seq) t.last_root_seq = seq;
 			++t.root_count;
+			// Stage 8 hysteresis: latch this root part. It is hidden by the
+			// distance predicate now; the latch keeps it hidden if its bone
+			// origin drifts just outside the acquire band.
+			own_hyst_latch(t, own_fork_query_fp(program, count, index_offset));
 			return false;   // root members are hidden, or not, by the distance predicate
 		}
 		if (!std::isfinite(distance) || distance <= 0.0f)
 			return false;
 		const own_fork_fp fp = own_fork_query_fp(program, count, index_offset);
+		// Stage 8 hysteresis: a latched root part that drifted outside the
+		// acquire band stays hidden until its gap exceeds the release band.
+		// Unlatch only on a genuine large gap; disarmed frames (stale etc.)
+		// stay latched and simply do not hide (R1 grace).
+		if (own_hyst_latched(t, fp))
+		{
+			if (std::fabs(distance - o.own_est) > kHystReleaseBand)
+				own_hyst_release(t, fp);
+			else if (own_hyst_gate(s, p, distance, o))
+				return true;
+		}
 		// A known fingerprint counts as seen even when bound or not drawable
 		// right now (span not begun / distance out of sanity): absence means
 		// "vanished from the frame", not "not hidden this frame".

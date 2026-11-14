@@ -966,6 +966,70 @@ int main(int argc, char **argv) {
    assert(fork_hidden==2*(40-30));
    std::printf("sr_fork_end_to_end_binding_and_hide: pass (%d/%d fork draws hidden after binding)\n", fork_hidden, fork_total);
  }
+ // --- sr_hyst_latch_and_hold: a root part latches at gap 0 and stays hidden at gap 0.5 (band-edge drift). ---
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x8000d);g_frame_id=18000;touch_frame();
+   own()=own_track{};pcache().count=0;icache().count=0;forks()=own_fork_track{};
+   g_settings=settings{};g_settings.hide_own=true;g_settings.own_distance=4.9f;g_settings.detect_mode=1;g_settings.render_mode=1;g_settings.enabled=true;
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   // root part (buf 1639) at the estimate: root member -> latched, fork path returns false (distance predicate hides it)
+   assert(!srf_note(2.86f,1639,712,282,10491,650,4000));
+   bool latched=false; for(int i=0;i<kHystMaxEntries;i++) if(forks().hyst[i].used&&forks().hyst[i].latched) latched=true;
+   assert(latched);
+   // same fingerprint drifted to gap 0.5: hysteresis hides it (fork path returns true)
+   assert(srf_note(3.36f,1639,712,282,10491,650,4000));
+   // same fingerprint at gap 1.0 (> release 0.75): unlatched, not hidden
+   assert(!srf_note(3.86f,1639,712,282,10491,650,4000));
+   bool still=false; for(int i=0;i<kHystMaxEntries;i++) if(forks().hyst[i].used&&forks().hyst[i].latched) still=true;
+   assert(!still);
+ }
+ std::printf("sr_hyst_latch_and_hold: pass\n");
+ // --- sr_hyst_no_global_widening: a never-latched part at gap 0.5 is NOT hidden (no permissive threshold). ---
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x8000e);g_frame_id=19000;touch_frame();
+   own()=own_track{};pcache().count=0;icache().count=0;forks()=own_fork_track{};
+   g_settings=settings{};g_settings.hide_own=true;g_settings.own_distance=4.9f;g_settings.detect_mode=1;g_settings.render_mode=1;g_settings.enabled=true;
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   // a part never drawn at gap<=0.2 (different fingerprint, first seen at gap 0.5): not hidden
+   assert(!srf_note(3.36f,2001,2002,282,10491,650,4000));
+ }
+ std::printf("sr_hyst_no_global_widening: pass\n");
+ // --- sr_hyst_stale_suspends_but_retains: stale frame does not hide, but the latch survives (R1 grace). ---
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x8000f);g_frame_id=20000;touch_frame();
+   own()=own_track{};pcache().count=0;icache().count=0;forks()=own_fork_track{};
+   g_settings=settings{};g_settings.hide_own=true;g_settings.own_distance=4.9f;g_settings.detect_mode=1;g_settings.render_mode=1;g_settings.enabled=true;
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   assert(!srf_note(2.86f,1639,712,282,10491,650,4000));   // latch
+   own().stale_frames=3;                                     // stale: gate closed
+   assert(!srf_note(3.36f,1639,712,282,10491,650,4000));   // not hidden while stale
+   own().stale_frames=0;                                     // corroborated again
+   assert(srf_note(3.36f,1639,712,282,10491,650,4000));    // latch retained: hidden again
+ }
+ std::printf("sr_hyst_stale_suspends_but_retains: pass\n");
+ // --- sr_hyst_reset_clears: own_fork_reset() (tracker wipe) clears latches. ---
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x80010);g_frame_id=21000;touch_frame();
+   own()=own_track{};pcache().count=0;icache().count=0;forks()=own_fork_track{};
+   g_settings=settings{};g_settings.hide_own=true;g_settings.own_distance=4.9f;g_settings.detect_mode=1;g_settings.render_mode=1;g_settings.enabled=true;
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   assert(!srf_note(2.86f,1639,712,282,10491,650,4000));   // latch
+   own_fork_reset();                                        // wipe clears latches
+   own().own_est=2.86f;own().cand=2.86f;own().stable=1000;own().stale_frames=0;
+   assert(!srf_note(3.36f,1639,712,282,10491,650,4000));   // no latch: not hidden
+ }
+ std::printf("sr_hyst_reset_clears: pass\n");
+ // --- sr_hyst_release_band_edge: latched part hidden at gap 0.75, released at gap 0.76. ---
+ {
+   g_opengl_context=reinterpret_cast<void *>(0x80011);g_frame_id=22000;touch_frame();
+   own()=own_track{};pcache().count=0;icache().count=0;forks()=own_fork_track{};
+   g_settings=settings{};g_settings.hide_own=true;g_settings.own_distance=4.9f;g_settings.detect_mode=1;g_settings.render_mode=1;g_settings.enabled=true;
+   own().own_est=2.0f;own().cand=2.0f;own().stable=1000;own().stale_frames=0;
+   assert(!srf_note(2.0f,1639,712,282,10491,650,4000));    // latch (gap 0)
+   assert(srf_note(2.75f,1639,712,282,10491,650,4000));    // gap 0.75 (exact): still hidden
+   assert(!srf_note(2.76f,1639,712,282,10491,650,4000));   // gap 0.76: released, not hidden
+ }
+ std::printf("sr_hyst_release_band_edge: pass\n");
  g_opengl_context=nullptr;own()=own_track{};pcache().count=0;icache().count=0;forks()=own_fork_track{};
  // ===== end sr_* block =====
  // If a declared camera uniform has zero data, name the actual matrix fallback.
