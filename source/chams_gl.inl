@@ -1846,6 +1846,138 @@ namespace reshade::chams
 	// Shared by all draw-wrapper template instantiations on this thread.
 	inline frame_trace &draw_trace() { static thread_local frame_trace trace; return trace; }
 
+	// Stage 34: Diagnostic-only per-draw monitoring (read-only, no behavior change)
+	// Tracks decision consistency per fingerprint and candidate group.
+	// Ownership is NEVER inferred from decisions. All groups default to UNKNOWN.
+	struct monitor_fp {
+		GLint program = 0;
+		GLint array_buffer = 0;
+		GLint element_buffer = 0;
+		GLsizei count = 0;
+		uint64_t index_offset = 0;
+		unsigned observations = 0;
+		unsigned hide_obs = 0;
+		unsigned direct_obs = 0;
+		unsigned last_frame = 0;
+	};
+
+	struct monitor_group {
+		unsigned first_frame = 0;
+		unsigned last_frame = 0;
+		unsigned draw_count = 0;
+		monitor_fp fps[32];
+		unsigned fp_count = 0;
+		float dist_min = 1e9f;
+		float dist_max = -1e9f;
+		bool has_multiple_sources = false;
+		unsigned hide_count = 0;
+		unsigned direct_count = 0;
+		unsigned decision_changes = 0;
+		char last_decision[16] = {};
+		// Ownership: 0=UNKNOWN, 1=LOCAL_CONFIRMED, 2=ENEMY_CONFIRMED
+		// Default UNKNOWN. Only set via manual verification, never inferred.
+		int ownership = 0;
+	};
+
+	inline monitor_group &monitor_groups() { static thread_local monitor_group groups[8]; return groups[0]; }
+	inline unsigned &monitor_group_count() { static thread_local unsigned n = 0; return n; }
+	inline unsigned &monitor_frame() { static unsigned f = 0; return f; }
+
+	inline void monitor_draw(GLint program, GLsizei count, uint64_t index_offset,
+		                     float dist, const char *dist_source, const char *decision,
+		                     bool fork_result)
+	{
+		if (!g_settings.dump) return;  // Disabled by default
+
+		const unsigned frame = g_frame_id.load(std::memory_order_relaxed);
+		monitor_group *groups = &monitor_groups();
+		unsigned &ngroups = monitor_group_count();
+
+		// Find or create candidate group by distance (0.5m threshold)
+		monitor_group *grp = nullptr;
+		for (unsigned i = 0; i < ngroups; ++i)
+		{
+			if (std::fabs(dist - groups[i].dist_min) < 0.5f ||
+			    std::fabs(dist - groups[i].dist_max) < 0.5f)
+			{
+				grp = &groups[i];
+				break;
+			}
+		}
+		if (grp == nullptr && ngroups < 8)
+		{
+			grp = &groups[ngroups++];
+			grp->first_frame = frame;
+			grp->dist_min = dist;
+			grp->dist_max = dist;
+		}
+
+		if (grp == nullptr) return;  // No group available
+
+		grp->last_frame = frame;
+		++grp->draw_count;
+		if (dist < grp->dist_min) grp->dist_min = dist;
+		if (dist > grp->dist_max) grp->dist_max = dist;
+
+		// Find or create fingerprint entry
+		monitor_fp *fp = nullptr;
+		for (unsigned i = 0; i < grp->fp_count; ++i)
+		{
+			if (grp->fps[i].program == program &&
+			    grp->fps[i].count == count &&
+			    grp->fps[i].index_offset == index_offset)
+			{
+				fp = &grp->fps[i];
+				break;
+			}
+		}
+		if (fp == nullptr && grp->fp_count < 32)
+		{
+			fp = &grp->fps[grp->fp_count++];
+			fp->program = program;
+			fp->count = count;
+			fp->index_offset = index_offset;
+		}
+
+		if (fp != nullptr)
+		{
+			++fp->observations;
+			fp->last_frame = frame;
+			if (std::strcmp(decision, "hide_own") == 0)
+				++fp->hide_obs;
+			else if (std::strcmp(decision, "direct") == 0)
+				++fp->direct_obs;
+		}
+
+		// Track decision changes
+		if (grp->last_decision[0] != 0 &&
+		    std::strcmp(grp->last_decision, decision) != 0)
+		{
+			++grp->decision_changes;
+		}
+		std::strncpy(grp->last_decision, decision, sizeof(grp->last_decision) - 1);
+
+		if (std::strcmp(decision, "hide_own") == 0)
+			++grp->hide_count;
+		else if (std::strcmp(decision, "direct") == 0)
+			++grp->direct_count;
+
+		// Output per-draw record (bounded by dump_lines_left)
+		if (dump_lines_left() > 0)
+		{
+			--dump_lines_left();
+			char line[512];
+			std::snprintf(line, sizeof(line),
+				"[CHAMS-MONITOR] f=%u prog=%d cnt=%d idx=%llu dist=%.3f src=%s "
+				"ownest=%.3f stable=%d stale=%d decision=%s fork=%d grp=%u fp=%u",
+				frame, program, count, (unsigned long long)index_offset,
+				dist, dist_source ? dist_source : "?", own().own_est, own().stable,
+				own().stale_frames, decision, fork_result ? 1 : 0,
+				(unsigned)(grp - groups), fp ? (unsigned)(fp - grp->fps) : 999);
+			dump_line(line);
+		}
+	}
+
 	// Overlay bookkeeping is shared by every draw wrapper, like ov() itself.
 	// Keeping these statics inside draw_chams<F> would create one copy per
 	// entry-point lambda, repeatedly resetting the shared mask on mode changes.
@@ -2228,6 +2360,7 @@ namespace reshade::chams
 		{
 			if (diag != nullptr) ++diag->own_hidden;
 			if (cap) cap->decision = "hide_own";
+			monitor_draw(program, count, index_offset, dist, info->dist_source, "hide_own", true);
 			real_draw();
 			return;
 		}
@@ -2236,6 +2369,7 @@ namespace reshade::chams
 		{
 			if (diag != nullptr) ++diag->own_hidden;
 			if (cap) cap->decision = "hide_own";
+			monitor_draw(program, count, index_offset, dist, info->dist_source, "hide_own", false);
 			real_draw();
 			return;
 		}
@@ -2323,6 +2457,7 @@ namespace reshade::chams
 		}
 
 		if (cap) cap->decision = s.render_mode == 0 ? "direct_overlay_fallback" : "direct";
+		monitor_draw(program, count, index_offset, dist, info->dist_source, "direct", false);
 		// ---- 2. GLOW / HIGHLIGHT: four modes (menu: "Player highlight") -----
 		// Every mode draws the part hidden behind a wall with GL_GREATER and the
 		// part in plain sight with GL_LEQUAL, exactly like before. What changes
