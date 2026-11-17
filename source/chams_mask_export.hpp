@@ -349,7 +349,7 @@ void export_mask_if_requested()
 // (glReadPixels); GPU sharing is a later stage. Disabled by default: when
 // %TEMP%\chams-clean-capture.flag is absent this returns immediately with
 // no GL calls and no file writes, so the default rendering path is unchanged.
-inline void capture_clean_frame()
+void capture_clean_frame()
 {
 	using namespace mask_export_detail;
 	if (!flag_present(L"chams-clean-capture.flag"))
