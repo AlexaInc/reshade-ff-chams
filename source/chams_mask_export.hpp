@@ -325,8 +325,10 @@ inline void export_real_mask(unsigned frame)
 inline void export_mask_if_requested()
 {
 	// Fast path: neither flag present -> no GL calls, no file writes.
-	const bool want_real = flag_present(L"chams-mask-export.flag");
-	const bool want_synth = flag_present(L"chams-mask-synthetic.flag");
+	const bool want_real =
+	    mask_export_detail::flag_present(L"chams-mask-export.flag");
+	const bool want_synth =
+	    mask_export_detail::flag_present(L"chams-mask-synthetic.flag");
 	if (!want_real && !want_synth)
 		return;
 
