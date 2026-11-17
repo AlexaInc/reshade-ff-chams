@@ -426,3 +426,5 @@ void main()
 			quad(0.0f, 0.0f, s.stroke_open_color, 0.85f);
 		}
 	}
+
+#include "chams_mask_export.hpp" // Stage 50A diagnostic (flag-gated, read-only)

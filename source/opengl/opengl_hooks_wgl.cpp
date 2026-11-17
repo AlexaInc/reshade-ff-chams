@@ -1326,6 +1326,7 @@ extern "C" BOOL  WINAPI wglSwapBuffers(HDC hdc)
 	const auto capture_context = reinterpret_cast<uintptr_t>(wglGetCurrentContext());
 	reshade::chams::capture::runtime_present_begin(capture_context, reinterpret_cast<uintptr_t>(hdc));
 	reshade::chams::poll_hotkey();          // chams: in-game on/off key
+	reshade::chams::export_mask_if_requested(); // Stage 50A diagnostic (no-op without flag)
 	reshade::chams::render_overlay();       // chams: composite the mask on top of the finished frame
 	reshade::chams::begin_frame();          // chams: reset the per-frame draw budget
 
