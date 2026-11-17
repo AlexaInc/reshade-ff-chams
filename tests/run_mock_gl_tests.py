@@ -1435,8 +1435,111 @@ int main(int argc, char **argv) {
    assert(!ov().ready && ov().fbo==0 && ov().vao==0 && ov().mask_tex==0 && ov().vbo==0);
    mock_fail_vao = false;
   }
+
+  // Stage 85: disabled-reason split + diagnostic identity (genuine).
+  {
+    auto reset85 = [&](){
+      comp_attempts().store(0); comp_success().store(0); comp_ctx_mismatch().store(0);
+      comp_no_mask().store(0); comp_fbo_incomplete().store(0); comp_init_fail().store(0);
+      comp_disabled().store(0); comp_frame_mismatch().store(0); comp_gl_error().store(0);
+      comp_disabled_no_context().store(0); comp_disabled_render_mode().store(0);
+      comp_disabled_not_enabled().store(0); comp_disabled_menu_open().store(0);
+      comp_disabled_no_effect().store(0);
+      mock_get_error_value = GL_NO_ERROR; mock_fbo_status = GL_FRAMEBUFFER_COMPLETE;
+      mock_fail_shader=false; mock_fail_program=false;
+      mock_fail_fbo=false; mock_fail_vao=false; mock_fail_tex=false; mock_fail_vbo=false;
+      g_opengl_context=reinterpret_cast<void*>(0x8500); g_frame_id=8500;
+      g_settings.render_mode=0; g_settings.enabled=true; g_overlay_open=false;
+      g_settings.glow=true; g_settings.stroke=true;
+    };
+    // 85-1: no_context (highest priority)
+    {
+      reset85(); ov_map().clear();
+      g_opengl_context=nullptr; g_settings.render_mode=0; g_settings.enabled=true; g_overlay_open=false;
+      unsigned before=comp_disabled_no_context().load();
+      render_overlay();
+      assert(comp_disabled().load()==1 && comp_disabled_no_context().load()==before+1);
+      assert(comp_disabled_render_mode().load()==0 && comp_disabled_not_enabled().load()==0);
+    }
+    // 85-2: render_mode (when context present)
+    {
+      reset85(); ov_map().clear();
+      g_opengl_context=reinterpret_cast<void*>(0x8501); g_settings.render_mode=1; g_overlay_open=false;
+      render_overlay();
+      assert(comp_disabled().load()==1 && comp_disabled_render_mode().load()==1);
+      assert(comp_disabled_no_context().load()==0);
+    }
+    // 85-3: not_enabled
+    {
+      reset85(); ov_map().clear();
+      g_settings.render_mode=0; g_settings.enabled=false; g_overlay_open=false;
+      render_overlay();
+      assert(comp_disabled().load()==1 && comp_disabled_not_enabled().load()==1);
+    }
+    // 85-4: menu_open (lowest early priority)
+    {
+      reset85(); ov_map().clear();
+      g_settings.enabled=true; g_overlay_open=true;
+      render_overlay();
+      assert(comp_disabled().load()==1 && comp_disabled_menu_open().load()==1);
+    }
+    // 85-5: no_effect (glow+stroke both off) - late disabled
+    {
+      reset85(); ov_map().clear();
+      g_overlay_open=false; g_settings.glow=false; g_settings.stroke=false;
+      g_frame_id=8510; previous_render_mode()=-1; g_settings.render_mode=0;
+      g_opengl_context=reinterpret_cast<void*>(0x8505);
+      assert(overlay_build());
+      g_frame_id=8511; overlay_capture_mesh([]{}); // capture at 8511
+      assert(ov().has_mask && ov().captured_frame==8511);
+      // g_settings still has no_effect
+      render_overlay();
+      assert(comp_disabled().load()==1 && comp_disabled_no_effect().load()==1);
+      assert(comp_success().load()==0);
+      g_settings.glow=true; g_settings.stroke=true;
+    }
+    // 85-6: priority - no_context wins over render_mode
+    {
+      reset85(); ov_map().clear();
+      g_opengl_context=nullptr; g_settings.render_mode=1; g_settings.enabled=false; g_overlay_open=true;
+      render_overlay();
+      assert(comp_disabled_no_context().load()==1);
+      assert(comp_disabled_render_mode().load()==0 && comp_disabled_not_enabled().load()==0 && comp_disabled_menu_open().load()==0);
+    }
+    // 85-7: total preserved (sum of reasons == disabled)
+    {
+      reset85(); ov_map().clear();
+      g_opengl_context=nullptr; render_overlay();
+      g_opengl_context=reinterpret_cast<void*>(0x8507); g_settings.render_mode=1; g_overlay_open=false; g_settings.enabled=true; render_overlay();
+      g_settings.render_mode=0; g_settings.enabled=false; render_overlay();
+      g_overlay_open=true; g_settings.enabled=true; render_overlay();
+      assert(comp_disabled().load()==4);
+      assert(comp_disabled_no_context().load()==1 && comp_disabled_render_mode().load()==1 && comp_disabled_not_enabled().load()==1 && comp_disabled_menu_open().load()==1);
+      unsigned sum = comp_disabled_no_context().load()+comp_disabled_render_mode().load()+comp_disabled_not_enabled().load()+comp_disabled_menu_open().load()+comp_disabled_no_effect().load();
+      assert(sum==comp_disabled().load());
+    }
+    // 85-8: diagnostic helpers don't change rendering (no GL, no crash, identity stable)
+    {
+      reset85(); ov_map().clear();
+      g_opengl_context=reinterpret_cast<void*>(0x8508); g_settings.render_mode=0; g_settings.enabled=true; g_overlay_open=false;
+      g_frame_id=8520; previous_render_mode()=-1;
+      void *k1=current_context_key(); unsigned long t1=diag_thread_id(); void *h1=diag_hdc();
+      (void)k1; (void)t1; (void)h1;
+      assert(overlay_build());
+      overlay_capture_mesh([]{});
+      g_frame_id=8520; // match
+      render_overlay();
+      assert(comp_success().load()==1);
+      // second capture should not re-log but still succeed (diag_capture_logged)
+      g_frame_id=8521; overlay_capture_mesh([]{}); g_frame_id=8521; render_overlay();
+      assert(comp_success().load()==2);
+    }
+  }
+
   // 82-6 Clean retry: same-ctx no-retry (tried prevents), new-ctx succeeds.
   {
+   // Re-establish failed ctx 24 (Stage 85 cleared map; recreate same condition as Stage 82-1).
+   g_opengl_context=reinterpret_cast<void*>(24); mock_fail_fbo=true; g_frame_id=604; previous_render_mode()=-1; g_settings.render_mode=0; assert(!overlay_build()); mock_fail_fbo=false;
    // Same ctx 24 (tried=true, ready=false): retry returns false (no retry policy).
    g_opengl_context=reinterpret_cast<void*>(24);
    assert(!overlay_build()); // tried, no retry

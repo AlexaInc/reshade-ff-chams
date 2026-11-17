@@ -68,6 +68,7 @@
 
 		unsigned captured_frame = 0xFFFFFFFFu;   // frame the mask belongs to
 		bool     has_mask = false;
+		bool     diag_capture_logged = false; // Stage 85: rate-limit capture diagnostic (once per context)
 	};
 
 	// Stage 79: per-context overlay state (FBO/VAO/texture/program all per-context,
@@ -80,6 +81,24 @@
 		return (void *)wglGetCurrentContext();
 #else
 		return g_opengl_context;
+#endif
+	}
+	// Stage 85: diagnostic identity helpers. No GL calls, no context switches,
+	// no locks. Thread/HDC are queries only. Mock (Linux) returns 0/nullptr.
+	inline unsigned long diag_thread_id()
+	{
+#ifdef _WIN32
+		return (unsigned long)GetCurrentThreadId();
+#else
+		return 0UL;
+#endif
+	}
+	inline void *diag_hdc()
+	{
+#ifdef _WIN32
+		return (void *)wglGetCurrentDC(); // WGL query only, no state change
+#else
+		return nullptr;
 #endif
 	}
 	inline std::unordered_map<void *, overlay_gpu> &ov_map()
@@ -102,6 +121,12 @@
 	inline std::atomic<unsigned> &comp_disabled() { static std::atomic<unsigned> v{0}; return v; }
 	inline std::atomic<unsigned> &comp_frame_mismatch() { static std::atomic<unsigned> v{0}; return v; }
 	inline std::atomic<unsigned> &comp_gl_error() { static std::atomic<unsigned> v{0}; return v; }
+	// Stage 85: reason-specific disabled counters (comp_disabled remains the total).
+	inline std::atomic<unsigned> &comp_disabled_no_context() { static std::atomic<unsigned> v{0}; return v; }
+	inline std::atomic<unsigned> &comp_disabled_render_mode() { static std::atomic<unsigned> v{0}; return v; }
+	inline std::atomic<unsigned> &comp_disabled_not_enabled() { static std::atomic<unsigned> v{0}; return v; }
+	inline std::atomic<unsigned> &comp_disabled_menu_open() { static std::atomic<unsigned> v{0}; return v; }
+	inline std::atomic<unsigned> &comp_disabled_no_effect() { static std::atomic<unsigned> v{0}; return v; }
 	inline overlay_gpu &ov()
 	{
 		void *key = current_context_key();
@@ -303,7 +328,8 @@ void main()
 
 		g.ready = true;
 		reshade::log::message(reshade::log::level::info,
-			"[CHAMS] overlay renderer ready (mask framebuffer + composite shader)");
+			"[CHAMS] overlay renderer ready (mask framebuffer + composite shader) thread=%lu key=%p hdc=%p",
+			diag_thread_id(), current_context_key(), diag_hdc());
 		return true;
 	}
 
@@ -402,6 +428,13 @@ void main()
 			{
 				g.captured_frame = g_frame_id;
 				g.has_mask = true;
+				if (!g.diag_capture_logged)
+				{
+					g.diag_capture_logged = true;
+					reshade::log::message(reshade::log::level::info,
+						"[CHAMS] overlay capture ok thread=%lu key=%p hdc=%p frame=%u",
+						diag_thread_id(), current_context_key(), diag_hdc(), g_frame_id.load(std::memory_order_relaxed));
+				}
 			}
 			else
 			{
@@ -424,17 +457,45 @@ void main()
 		// Periodic summary (every 300 frames, bounded, no per-draw log).
 		if (g_frame_id.load(std::memory_order_relaxed) % 300 == 0)
 		{
+			void *dkey = current_context_key();
+			overlay_gpu *dfound = ov_find(); // brief lock, no GL; every 300 frames only
 			reshade::log::message(reshade::log::level::info,
-				"[CHAMS] overlay composite: attempts=%u success=%u ctx_mismatch=%u no_mask=%u fbo_incomplete=%u init_fail=%u disabled=%u frame_mismatch=%u gl_error=%u",
+				"[CHAMS] overlay composite: attempts=%u success=%u ctx_mismatch=%u no_mask=%u fbo_incomplete=%u init_fail=%u disabled=%u [no_context=%u render_mode=%u not_enabled=%u menu_open=%u no_effect=%u] frame_mismatch=%u gl_error=%u thread=%lu key=%p hdc=%p found=%d owner=%p",
 				comp_attempts().load(std::memory_order_relaxed), comp_success().load(std::memory_order_relaxed),
 				comp_ctx_mismatch().load(std::memory_order_relaxed), comp_no_mask().load(std::memory_order_relaxed),
 				comp_fbo_incomplete().load(std::memory_order_relaxed), comp_init_fail().load(std::memory_order_relaxed),
-				comp_disabled().load(std::memory_order_relaxed), comp_frame_mismatch().load(std::memory_order_relaxed),
-				comp_gl_error().load(std::memory_order_relaxed));
+				comp_disabled().load(std::memory_order_relaxed),
+				comp_disabled_no_context().load(std::memory_order_relaxed), comp_disabled_render_mode().load(std::memory_order_relaxed),
+				comp_disabled_not_enabled().load(std::memory_order_relaxed), comp_disabled_menu_open().load(std::memory_order_relaxed),
+				comp_disabled_no_effect().load(std::memory_order_relaxed),
+				comp_frame_mismatch().load(std::memory_order_relaxed),
+				comp_gl_error().load(std::memory_order_relaxed),
+				diag_thread_id(), dkey, diag_hdc(), dfound ? 1 : 0, dfound ? dkey : nullptr);
 		}
-		if (g_opengl_context == nullptr || g_settings.render_mode != 0 || !g_settings.enabled || g_overlay_open)
+		// Stage 85: split disabled by reason (total preserved). Priority = source order:
+		// no_context > render_mode > not_enabled > menu_open. Same return behavior.
+		if (g_opengl_context == nullptr)
 		{
 			comp_disabled().fetch_add(1, std::memory_order_relaxed);
+			comp_disabled_no_context().fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		if (g_settings.render_mode != 0)
+		{
+			comp_disabled().fetch_add(1, std::memory_order_relaxed);
+			comp_disabled_render_mode().fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		if (!g_settings.enabled)
+		{
+			comp_disabled().fetch_add(1, std::memory_order_relaxed);
+			comp_disabled_not_enabled().fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		if (g_overlay_open)
+		{
+			comp_disabled().fetch_add(1, std::memory_order_relaxed);
+			comp_disabled_menu_open().fetch_add(1, std::memory_order_relaxed);
 			return;
 		}
 		// Stage 79: per-context lookup. No entry for current ctx => context mismatch
@@ -473,6 +534,7 @@ void main()
 		if (!want_glow && !want_stroke)
 		{
 			comp_disabled().fetch_add(1, std::memory_order_relaxed);
+			comp_disabled_no_effect().fetch_add(1, std::memory_order_relaxed);
 			return;
 		}
 
