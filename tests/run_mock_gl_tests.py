@@ -42,7 +42,7 @@ assert c11[365759]['reason']=='no_observation' and c11[365759]['before_estimate'
 s = (root/'source/chams_gl.inl').read_text() + (root/'source/chams_overlay.inl').read_text()
 tokens = sorted(set(re.findall(r'\bGL_[A-Z0-9_]+\b', s)) - {'GL_TRUE','GL_FALSE'})
 names = sorted(set(re.findall(r'\bgl\.([A-Za-z0-9_]+)', s)))
-custom = {'GetUniformLocation','GetUniformfv','GetIntegerv','GetBooleanv','GetFloatv','IsEnabled','Enable','Disable','ColorMask','DepthMask','DepthFunc','DepthRange','BlendFuncSeparate','BlendFunc','BlendEquationSeparate','BlendEquation','BlendColor','LineWidth','PolygonMode','PolygonOffset','Scissor','ActiveTexture','BindTexture','BindFramebuffer','UseProgram','BindVertexArray','BindBuffer','Viewport','ClearColor'}
+custom = {'GetUniformLocation','GetUniformfv','GetIntegerv','GetBooleanv','GetFloatv','IsEnabled','Enable','Disable','ColorMask','DepthMask','DepthFunc','DepthRange','BlendFuncSeparate','BlendFunc','BlendEquationSeparate','BlendEquation','BlendColor','LineWidth','PolygonMode','PolygonOffset','Scissor','ActiveTexture','BindTexture','BindFramebuffer','UseProgram','BindVertexArray','BindBuffer','Viewport','ClearColor','CreateShader','GetShaderiv','CreateProgram','GetProgramiv','GetError','CheckFramebufferStatus','GenFramebuffers','GenVertexArrays','GenBuffers','GenTextures'}
 head = '''#include <cstddef>
 #include <map>
 #include <array>
@@ -94,10 +94,40 @@ void get_uniform(unsigned program, int loc, float *out){
  if(program==999 && loc==9){ out[0]=mock_cam999[0]; out[1]=mock_cam999[1]; out[2]=mock_cam999[2]; for(int i=3;i<16;i++)out[i]=0.0f; return; }
  for(int i=0;i<16;++i)out[i]=float(i+1);
 }
+unsigned mock_next_id=100;
+unsigned mock_get_error_value = GL_NO_ERROR;
+unsigned mock_fbo_status = GL_FRAMEBUFFER_COMPLETE;
+bool mock_fail_shader = false;
+bool mock_fail_program = false;
+bool mock_fail_gen = false;
+bool mock_fail_fbo = false;
+bool mock_fail_vao = false;
+bool mock_fail_tex = false;
+bool mock_fail_vbo = false;
+unsigned create_shader(unsigned){ return mock_fail_shader ? 0 : mock_next_id++; }
+void get_shaderiv(unsigned,int,int* ok){ *ok = mock_fail_shader ? 0 : 1; }
+unsigned create_program(){ return mock_fail_program ? 0 : mock_next_id++; }
+void get_programiv(unsigned,int,int* linked){ *linked = mock_fail_program ? 0 : 1; }
+unsigned get_error(){ return mock_get_error_value; }
+unsigned check_fbo_status(unsigned){ return mock_fbo_status; }
+void gen_framebuffers(int,unsigned* p){ *p = (mock_fail_gen || mock_fail_fbo) ? 0 : mock_next_id++; }
+void gen_vertex_arrays(int,unsigned* p){ *p = (mock_fail_gen || mock_fail_vao) ? 0 : mock_next_id++; }
+void gen_buffers(int,unsigned* p){ *p = (mock_fail_gen || mock_fail_vbo) ? 0 : mock_next_id++; }
+void gen_textures(int,unsigned* p){ *p = (mock_fail_gen || mock_fail_tex) ? 0 : mock_next_id++; }
 struct GL {
 '''
 head += ''.join('Any '+n+';\n' for n in names if n not in custom)
 head += '''
+decltype(&create_shader) CreateShader=create_shader;
+decltype(&get_shaderiv) GetShaderiv=get_shaderiv;
+decltype(&create_program) CreateProgram=create_program;
+decltype(&get_programiv) GetProgramiv=get_programiv;
+decltype(&get_error) GetError=get_error;
+decltype(&check_fbo_status) CheckFramebufferStatus=check_fbo_status;
+decltype(&gen_framebuffers) GenFramebuffers=gen_framebuffers;
+decltype(&gen_vertex_arrays) GenVertexArrays=gen_vertex_arrays;
+decltype(&gen_buffers) GenBuffers=gen_buffers;
+decltype(&gen_textures) GenTextures=gen_textures;
 decltype(&uniform_location) GetUniformLocation=uniform_location;
 decltype(&get_uniform) GetUniformfv=get_uniform;
 decltype(&gi) GetIntegerv=gi; decltype(&gb) GetBooleanv=gb; decltype(&gf) GetFloatv=gf;
@@ -1200,6 +1230,7 @@ int main(int argc, char **argv) {
  { capture_gl_scope scope("mock_draw", GL_TRIANGLES, 200); scope.index_pointer(reinterpret_cast<void *>(0xdeadbeef)); draw_chams(GL_TRIANGLES,200,[&]{}, &scope); }
  capture::runtime_stop(); status=capture::runtime_status();
  assert(!status.io_error && !status.dropped && status.draws==1);
+
  const int iterations=4000; auto off_start=std::chrono::steady_clock::now();
  for(int i=0;i<iterations;i++){ capture_gl_scope scope("benchmark", GL_TRIANGLES, 200); draw_chams(GL_TRIANGLES,200,[&]{}, &scope); }
  const auto off_ns=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-off_start).count();
@@ -1209,6 +1240,216 @@ int main(int argc, char **argv) {
  capture::runtime_stop(); status=capture::runtime_status();
  assert(!status.io_error && !status.dropped && status.draws==iterations && status.instrumentation_samples==iterations);
  std::printf("MOCK BENCHMARK: off %.1f ns/draw, on %.1f ns/draw (not driver or in-game FPS)\n", double(off_ns)/iterations,double(on_ns)/iterations);
+ // Stage 79: context-aware overlay regression tests (8 required).
+ {
+  // 1. Single-context Overlay capture and composite.
+  g_opengl_context=reinterpret_cast<void*>(1);
+  g_settings.render_mode=0; g_settings.enabled=true; g_overlay_open=false; g_budget_left=110;
+  g_frame_id=200; previous_render_mode()=-1;
+  // Force build on ctx 1 (mock shader/program now succeed).
+  assert(overlay_build());
+  assert(ov().ready);
+  unsigned fbo1=ov().fbo, vao1=ov().vao;
+  assert(fbo1!=0 && vao1!=0);
+  // Capture (mock GetError/CheckFramebufferStatus succeed).
+  overlay_capture_mesh([]{});
+  assert(ov().has_mask && ov().captured_frame==200);
+  // Composite (same ctx, same frame).
+  unsigned succ_before=comp_success().load(std::memory_order_relaxed);
+  render_overlay();
+  assert(comp_success().load(std::memory_order_relaxed)==succ_before+1);
+  // 2. Independent context: no invalid reuse (ctx 2 has no entry, composite skips).
+  g_opengl_context=reinterpret_cast<void*>(2);
+  assert(ov_find()==nullptr);
+  unsigned mismatch_before=comp_ctx_mismatch().load(std::memory_order_relaxed);
+  render_overlay();
+  assert(comp_ctx_mismatch().load(std::memory_order_relaxed)==mismatch_before+1);
+  // 3. Shared context: local FBO/VAO ownership (ctx 2 gets own fbo/vao, different from ctx 1).
+  assert(overlay_build());
+  assert(ov().ready);
+  assert(ov().fbo!=fbo1 && ov().vao!=vao1);
+  unsigned fbo2=ov().fbo;
+  // 4. Capture with GL error -> has_mask=false (GENUINE: inject (GL_NO_ERROR + 1)).
+  {
+   g_opengl_context=reinterpret_cast<void*>(10); // fresh ctx, no pollution of 1/2
+   g_frame_id=500; previous_render_mode()=-1; g_settings.render_mode=0;
+   assert(overlay_build()); // mock success (controls reset)
+   mock_get_error_value = (GL_NO_ERROR + 1); // inject error
+   unsigned glerr_before=comp_gl_error().load(std::memory_order_relaxed);
+   overlay_capture_mesh([]{});
+   assert(!ov().has_mask && ov().captured_frame==0xFFFFFFFFu);
+   assert(comp_gl_error().load(std::memory_order_relaxed)==glerr_before+1);
+   mock_get_error_value = GL_NO_ERROR; // reset
+  }
+  // 4b. Capture with incomplete FBO -> has_mask=false (GENUINE: inject INCOMPLETE after size init).
+  {
+   g_opengl_context=reinterpret_cast<void*>(12);
+   g_frame_id=501; previous_render_mode()=-1; g_settings.render_mode=0;
+   assert(overlay_build());
+   overlay_capture_mesh([]{}); // success, initializes width/height
+   assert(ov().has_mask);
+   g_frame_id=502; // new frame, ensure_size will early-return (size matches)
+   mock_fbo_status = (GL_FRAMEBUFFER_COMPLETE + 1); // inject incomplete for validation
+   unsigned fbo_before=comp_fbo_incomplete().load(std::memory_order_relaxed);
+   overlay_capture_mesh([]{});
+   assert(!ov().has_mask && ov().captured_frame==0xFFFFFFFFu);
+   assert(comp_fbo_incomplete().load(std::memory_order_relaxed)==fbo_before+1);
+   mock_fbo_status = GL_FRAMEBUFFER_COMPLETE; // reset
+  }
+  // 4c. Failed shader init -> no false ready (GENUINE: inject shader failure, fresh ctx 13).
+  {
+   g_opengl_context=reinterpret_cast<void*>(13);
+   g_frame_id=502; previous_render_mode()=-1; g_settings.render_mode=0;
+   mock_fail_shader = true;
+   assert(!overlay_build());
+   assert(!ov().ready && ov().tried);
+   mock_fail_shader = false; // reset
+  }
+  // 4d. Failed program init -> no false ready (GENUINE: fresh ctx 14).
+  {
+   g_opengl_context=reinterpret_cast<void*>(14);
+   g_frame_id=503; previous_render_mode()=-1; g_settings.render_mode=0;
+   mock_fail_program = true;
+   assert(!overlay_build());
+   assert(!ov().ready && ov().tried);
+   mock_fail_program = false; // reset
+  }
+  // 4e. Failed capture -> Direct fallback remains available (GENUINE via draw_chams + scope decision).
+  {
+   g_opengl_context=reinterpret_cast<void*>(15);
+   g_frame_id=504; previous_render_mode()=-1; g_settings.render_mode=0;
+   g_budget_left=110; ints[GL_CURRENT_PROGRAM][0]=456; // character program
+   assert(overlay_build());
+   mock_get_error_value = (GL_NO_ERROR + 1); // force capture failure
+   capture_gl_scope scope("fallback_draw", GL_TRIANGLES, 200);
+   draw_chams(GL_TRIANGLES,200,[&]{}, &scope);
+   assert(!ov().has_mask); // capture failed, has_mask false
+   assert(scope.decision=="direct_overlay_fallback"); // Direct executed
+   mock_get_error_value = GL_NO_ERROR; // reset
+  }
+  // 4f. Reset failures -> subsequent valid capture succeeds (GENUINE).
+  {
+   g_opengl_context=reinterpret_cast<void*>(15); // same ctx as 4e (ready true, has_mask false)
+   g_frame_id=505; // new frame (first_this_frame true, will clear then draw)
+   overlay_capture_mesh([]{});
+   assert(ov().has_mask && ov().captured_frame==505);
+  }
+  // 4g. Gen failure documentation (production does not validate Gen* results).
+  {
+   g_opengl_context=reinterpret_cast<void*>(16);
+   g_frame_id=506; previous_render_mode()=-1; g_settings.render_mode=0;
+   mock_fail_gen = true;
+   bool built = overlay_build();
+   // Stage 82 fix: production validates Gen* IDs, ready=false on zero. (Was: ready=true bug.)
+   assert(!built && !ov().ready && ov().fbo==0 && ov().vao==0 && ov().mask_tex==0 && ov().vbo==0);
+   mock_fail_gen = false; // reset
+  }
+  // 5. Frame mismatch: stale mask rejected.
+  g_opengl_context=reinterpret_cast<void*>(1);
+  assert(ov().has_mask); // from test 1 (frame 200)
+  g_frame_id=201; // advance frame without new capture
+  unsigned frame_before=comp_frame_mismatch().load(std::memory_order_relaxed);
+  render_overlay();
+  assert(comp_frame_mismatch().load(std::memory_order_relaxed)==frame_before+1);
+  // 6. Context switch: correct set selected (switch back to 1, fbo1 restored; switch to 2, fbo2).
+  g_opengl_context=reinterpret_cast<void*>(1);
+  assert(ov().fbo==fbo1);
+  g_opengl_context=reinterpret_cast<void*>(2);
+  assert(ov().fbo==fbo2);
+  // 7. Direct Mode regression: render_mode=1, draw_chams does not set has_mask, no overlay.
+  g_opengl_context=reinterpret_cast<void*>(1);
+  g_settings.render_mode=1; previous_render_mode()=-1; g_frame_id=300;
+  // Reset has_mask for ctx 1 via mode switch (draw_chams will reset).
+  draw_chams(GL_TRIANGLES,200,[&]{});
+  assert(previous_render_mode()==1);
+  // Direct path does not touch overlay has_mask for this frame (remains from test 1? Reset by mode switch).
+  // Mode switch at draw start resets has_mask=false, Direct does not set it.
+  assert(!ov().has_mask);
+  // 8. Composite no_mask path (GENUINE: failed capture leaves has_mask false, composite skips).
+  g_settings.render_mode=0; previous_render_mode()=-1; g_frame_id=400;
+  g_opengl_context=reinterpret_cast<void*>(1);
+  assert(overlay_build()); // already ready
+  // Force genuine capture failure (not manual has_mask set): inject GL error, capture, then composite.
+  mock_get_error_value = (GL_NO_ERROR + 1);
+  overlay_capture_mesh([]{});
+  assert(!ov().has_mask); // genuine failure, not manual
+  mock_get_error_value = GL_NO_ERROR; // reset before composite (composite checks its own GetError)
+  unsigned nomask_before=comp_no_mask().load(std::memory_order_relaxed);
+  render_overlay();
+  assert(comp_no_mask().load(std::memory_order_relaxed)==nomask_before+1);
+  // Restore Direct (after benchmark, end of main).
+  g_settings.render_mode=1; previous_render_mode()=-1;
+ }
+ // Stage 82: object creation validation (genuine, per-object failures).
+ {
+  // 82-1 Framebuffer gen failure (fresh ctx 20).
+  {
+   g_opengl_context=reinterpret_cast<void*>(20);
+   g_frame_id=600; previous_render_mode()=-1; g_settings.render_mode=0;
+   mock_fail_fbo = true;
+   unsigned init_before=comp_init_fail().load(std::memory_order_relaxed);
+   assert(!overlay_build());
+   assert(!ov().ready && ov().tried && ov().fbo==0 && ov().vao==0 && ov().mask_tex==0 && ov().vbo==0);
+   assert(comp_init_fail().load(std::memory_order_relaxed)==init_before+1);
+   mock_fail_fbo = false;
+  }
+  // 82-2 VAO gen failure (fresh ctx 21).
+  {
+   g_opengl_context=reinterpret_cast<void*>(21);
+   g_frame_id=601; previous_render_mode()=-1; g_settings.render_mode=0;
+   mock_fail_vao = true;
+   unsigned init_before=comp_init_fail().load(std::memory_order_relaxed);
+   assert(!overlay_build());
+   assert(!ov().ready && ov().tried && ov().fbo==0 && ov().vao==0);
+   assert(comp_init_fail().load(std::memory_order_relaxed)==init_before+1);
+   mock_fail_vao = false;
+  }
+  // 82-3 Texture gen failure (fresh ctx 22).
+  {
+   g_opengl_context=reinterpret_cast<void*>(22);
+   g_frame_id=602; previous_render_mode()=-1; g_settings.render_mode=0;
+   mock_fail_tex = true;
+   unsigned init_before=comp_init_fail().load(std::memory_order_relaxed);
+   assert(!overlay_build());
+   assert(!ov().ready && ov().tried && ov().mask_tex==0);
+   assert(comp_init_fail().load(std::memory_order_relaxed)==init_before+1);
+   mock_fail_tex = false;
+  }
+  // 82-4 Buffer gen failure (fresh ctx 23).
+  {
+   g_opengl_context=reinterpret_cast<void*>(23);
+   g_frame_id=603; previous_render_mode()=-1; g_settings.render_mode=0;
+   mock_fail_vbo = true;
+   unsigned init_before=comp_init_fail().load(std::memory_order_relaxed);
+   assert(!overlay_build());
+   assert(!ov().ready && ov().tried && ov().vbo==0);
+   assert(comp_init_fail().load(std::memory_order_relaxed)==init_before+1);
+   mock_fail_vbo = false;
+  }
+  // 82-5 Partial init failure (only VAO fails, others succeed; all zeroed, ready false).
+  {
+   g_opengl_context=reinterpret_cast<void*>(24);
+   g_frame_id=604; previous_render_mode()=-1; g_settings.render_mode=0;
+   mock_fail_vao = true;
+   assert(!overlay_build());
+   assert(!ov().ready && ov().fbo==0 && ov().vao==0 && ov().mask_tex==0 && ov().vbo==0);
+   mock_fail_vao = false;
+  }
+  // 82-6 Clean retry: same-ctx no-retry (tried prevents), new-ctx succeeds.
+  {
+   // Same ctx 24 (tried=true, ready=false): retry returns false (no retry policy).
+   g_opengl_context=reinterpret_cast<void*>(24);
+   assert(!overlay_build()); // tried, no retry
+   assert(!ov().ready);
+   // Fresh ctx 25 (new entry, tried=false): clean retry succeeds.
+   g_opengl_context=reinterpret_cast<void*>(25);
+   g_frame_id=605; previous_render_mode()=-1; g_settings.render_mode=0;
+   assert(overlay_build());
+   assert(ov().ready && ov().fbo!=0 && ov().vao!=0);
+  }
+  // Restore Direct.
+  g_settings.render_mode=1; previous_render_mode()=-1;
+ }
 }
 '''
 # Feed exact numeric values from preserved capture rows to the compiled tracker.

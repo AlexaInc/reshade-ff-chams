@@ -70,7 +70,51 @@
 		bool     has_mask = false;
 	};
 
-	inline overlay_gpu &ov() { static overlay_gpu g; return g; }
+	// Stage 79: per-context overlay state (FBO/VAO/texture/program all per-context,
+	// no sharing assumed). Key is current context identity: on Windows the HGLRC
+	// via wglGetCurrentContext(); on mock (Linux) g_opengl_context (void*).
+	// g_opengl_context tracks HGLRC via wglMakeCurrent hook (opengl_hooks_wgl.cpp).
+	inline void *current_context_key()
+	{
+#ifdef _WIN32
+		return (void *)wglGetCurrentContext();
+#else
+		return g_opengl_context;
+#endif
+	}
+	inline std::unordered_map<void *, overlay_gpu> &ov_map()
+	{
+		static std::unordered_map<void *, overlay_gpu> m;
+		return m;
+	}
+	inline std::mutex &ov_mutex()
+	{
+		static std::mutex m;
+		return m;
+	}
+	// Composite diagnostics (global, atomic, periodic summary, no per-draw log).
+	inline std::atomic<unsigned> &comp_attempts() { static std::atomic<unsigned> v{0}; return v; }
+	inline std::atomic<unsigned> &comp_success() { static std::atomic<unsigned> v{0}; return v; }
+	inline std::atomic<unsigned> &comp_ctx_mismatch() { static std::atomic<unsigned> v{0}; return v; }
+	inline std::atomic<unsigned> &comp_no_mask() { static std::atomic<unsigned> v{0}; return v; }
+	inline std::atomic<unsigned> &comp_fbo_incomplete() { static std::atomic<unsigned> v{0}; return v; }
+	inline std::atomic<unsigned> &comp_init_fail() { static std::atomic<unsigned> v{0}; return v; }
+	inline std::atomic<unsigned> &comp_disabled() { static std::atomic<unsigned> v{0}; return v; }
+	inline std::atomic<unsigned> &comp_frame_mismatch() { static std::atomic<unsigned> v{0}; return v; }
+	inline std::atomic<unsigned> &comp_gl_error() { static std::atomic<unsigned> v{0}; return v; }
+	inline overlay_gpu &ov()
+	{
+		void *key = current_context_key();
+		std::lock_guard<std::mutex> lock(ov_mutex());
+		return ov_map()[key];
+	}
+	inline overlay_gpu *ov_find()
+	{
+		void *key = current_context_key();
+		std::lock_guard<std::mutex> lock(ov_mutex());
+		auto it = ov_map().find(key);
+		return it == ov_map().end() ? nullptr : &it->second;
+	}
 
 	// Both shaders are GLSL 130 - plain GL 3.0, which every driver the emulator
 	// can run on supports. No extensions, no GL 4 syntax.
@@ -189,10 +233,16 @@ void main()
 		{
 			if (vs != 0) gl.DeleteShader(vs);
 			if (fs != 0) gl.DeleteShader(fs);
+			comp_init_fail().fetch_add(1, std::memory_order_relaxed);
 			return false;
 		}
 
 		g.program = gl.CreateProgram();
+		if (g.program == 0)
+		{
+			comp_init_fail().fetch_add(1, std::memory_order_relaxed);
+			return false;
+		}
 		gl.AttachShader(g.program, vs);
 		gl.AttachShader(g.program, fs);
 		gl.BindAttribLocation(g.program, 0, "a_pos");
@@ -208,6 +258,7 @@ void main()
 				"[CHAMS] overlay program failed to link - using the direct renderer");
 			gl.DeleteProgram(g.program);
 			g.program = 0;
+			comp_init_fail().fetch_add(1, std::memory_order_relaxed);
 			return false;
 		}
 
@@ -237,6 +288,18 @@ void main()
 		gl.BindTexture(GL_TEXTURE_2D, 0);
 
 		gl.GenFramebuffers(1, &g.fbo);
+
+		// Stage 82: validate all generated IDs. Zero means creation failed.
+		// Keep ready=false, do not permit capture/composite. No deletion (avoid
+		// unsafe cleanup when ownership uncertain; partial objects leak, driver
+		// reclaims on context delete). Zero partial IDs so they cannot be mistaken
+		// for valid resources.
+		if (g.fbo == 0 || g.vao == 0 || g.mask_tex == 0 || g.vbo == 0)
+		{
+			comp_init_fail().fetch_add(1, std::memory_order_relaxed);
+			g.fbo = 0; g.vao = 0; g.mask_tex = 0; g.vbo = 0;
+			return false;
+		}
 
 		g.ready = true;
 		reshade::log::message(reshade::log::level::info,
@@ -317,8 +380,7 @@ void main()
 			gl.ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 			gl.ClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 			gl.Clear(GL_COLOR_BUFFER_BIT);
-			g.captured_frame = g_frame_id;
-			g.has_mask = true;
+			// Stage 79: do NOT set has_mask here (false-success bug). Set after draw.
 		}
 
 		gl.Disable(GL_DEPTH_TEST);
@@ -332,6 +394,25 @@ void main()
 
 		real_draw();
 
+		// Stage 79: validate capture before marking mask valid.
+		{
+			GLenum err = gl.GetError();
+			GLenum status = gl.CheckFramebufferStatus(GL_FRAMEBUFFER);
+			if (err == GL_NO_ERROR && status == GL_FRAMEBUFFER_COMPLETE)
+			{
+				g.captured_frame = g_frame_id;
+				g.has_mask = true;
+			}
+			else
+			{
+				g.has_mask = false;
+				g.captured_frame = 0xFFFFFFFFu;
+				if (status != GL_FRAMEBUFFER_COMPLETE)
+					comp_fbo_incomplete().fetch_add(1, std::memory_order_relaxed);
+				if (err != GL_NO_ERROR)
+					comp_gl_error().fetch_add(1, std::memory_order_relaxed);
+			}
+		}
 	}
 
 	// ---------------------------------------------------------------- composite
@@ -339,23 +420,61 @@ void main()
 	// already in the framebuffer.
 	void render_overlay()   // declared in chams.hpp, called from wglSwapBuffers
 	{
-		overlay_gpu &g = ov();
-
+		comp_attempts().fetch_add(1, std::memory_order_relaxed);
+		// Periodic summary (every 300 frames, bounded, no per-draw log).
+		if (g_frame_id.load(std::memory_order_relaxed) % 300 == 0)
+		{
+			reshade::log::message(reshade::log::level::info,
+				"[CHAMS] overlay composite: attempts=%u success=%u ctx_mismatch=%u no_mask=%u fbo_incomplete=%u init_fail=%u disabled=%u frame_mismatch=%u gl_error=%u",
+				comp_attempts().load(std::memory_order_relaxed), comp_success().load(std::memory_order_relaxed),
+				comp_ctx_mismatch().load(std::memory_order_relaxed), comp_no_mask().load(std::memory_order_relaxed),
+				comp_fbo_incomplete().load(std::memory_order_relaxed), comp_init_fail().load(std::memory_order_relaxed),
+				comp_disabled().load(std::memory_order_relaxed), comp_frame_mismatch().load(std::memory_order_relaxed),
+				comp_gl_error().load(std::memory_order_relaxed));
+		}
 		if (g_opengl_context == nullptr || g_settings.render_mode != 0 || !g_settings.enabled || g_overlay_open)
+		{
+			comp_disabled().fetch_add(1, std::memory_order_relaxed);
 			return;
+		}
+		// Stage 79: per-context lookup. No entry for current ctx => context mismatch
+		// (capture on different HGLRC, or build never ran on this ctx). Skip safely.
 		// overlay_build() must NOT be called here (during wglSwapBuffers) because
 		// it may compile shaders, which stalls the GPU pipeline and freezes the
 		// game frame. Pre-building happens in draw_chams() when switching to
 		// overlay mode. If not ready yet, skip this frame.
 		// An empty frame is normal (e.g. lobby transition), not a renderer failure.
-		if (!g.tried || !g.ready || !g.has_mask || g.captured_frame != g_frame_id)
+		overlay_gpu *gp = ov_find();
+		if (gp == nullptr)
+		{
+			comp_ctx_mismatch().fetch_add(1, std::memory_order_relaxed);
 			return;
+		}
+		overlay_gpu &g = *gp;
+		if (!g.tried || !g.ready)
+		{
+			comp_init_fail().fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		if (!g.has_mask)
+		{
+			comp_no_mask().fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		if (g.captured_frame != g_frame_id)
+		{
+			comp_frame_mismatch().fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
 
 		const settings &s = g_settings;
 		const bool want_glow   = s.glow;
 		const bool want_stroke = s.stroke;
 		if (!want_glow && !want_stroke)
+		{
+			comp_disabled().fetch_add(1, std::memory_order_relaxed);
 			return;
+		}
 
 		overlay_state_guard guard;
 
@@ -425,6 +544,11 @@ void main()
 			gl.BlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
 			quad(0.0f, 0.0f, s.stroke_open_color, 0.85f);
 		}
+		// Stage 79: success only if no GL error (do not report success merely for being called).
+		if (gl.GetError() == GL_NO_ERROR)
+			comp_success().fetch_add(1, std::memory_order_relaxed);
+		else
+			comp_gl_error().fetch_add(1, std::memory_order_relaxed);
 	}
 
 #include "chams_mask_export.hpp" // Stage 50A diagnostic (flag-gated, read-only)
