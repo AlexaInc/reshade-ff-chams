@@ -129,7 +129,7 @@ inline bool write_png_rgba(const wchar_t *path, const uint8_t *rgba, uint32_t w,
 	for (uint32_t y = 0; y < h; ++y) {
 		uint8_t *dst = raw.data() + static_cast<size_t>(y) * (row_bytes + 1);
 		dst[0] = 0; // filter None
-		std::memcpy(dst + 1, rgba + static_cast<size_t>(y) * row_bytes, row_bytes);
+		std::memcpy(dst + 1, rgba + static_cast<size_t>(h - 1 - y) * row_bytes, row_bytes);
 	}
 
 	// Build zlib stream: 2-byte header + stored blocks + Adler-32.
