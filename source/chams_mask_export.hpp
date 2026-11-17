@@ -322,7 +322,7 @@ inline void export_real_mask(unsigned frame)
 }
 
 // ---- entry point (called from wglSwapBuffers before render_overlay) ------
-inline void export_mask_if_requested()
+void export_mask_if_requested()
 {
 	// Fast path: neither flag present -> no GL calls, no file writes.
 	const bool want_real =
@@ -345,5 +345,5 @@ inline void export_mask_if_requested()
 #else
 // Non-Windows (Linux mock tests): diagnostic is a no-op. The real
 // implementation above only compiles on Windows (MSVC CI).
-inline void export_mask_if_requested() {}
+void export_mask_if_requested() {}
 #endif
