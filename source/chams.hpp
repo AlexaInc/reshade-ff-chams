@@ -157,6 +157,7 @@ namespace reshade::chams
 	void begin_frame();      // called once per frame (wglSwapBuffers)
 	void render_overlay();   // composites the player mask on top of the finished frame
 	void export_mask_if_requested(); // diagnostic mask export POC (Stage 50A, flag-gated)
+	void capture_clean_frame(); // clean-frame capture POC (Stage 70, flag-gated)
 	void poll_hotkey();      // F8: master switch on/off
 	void load();
 	void ensure_loaded();  // apply saved settings before the first chams draw

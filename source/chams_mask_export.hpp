@@ -342,8 +342,69 @@ void export_mask_if_requested()
 		export_real_mask(frame);
 }
 
+
+// ---- clean-frame capture (Stage 70, flag-gated, read-only) -----------------
+// Captures the default framebuffer BEFORE render_overlay() composites Chams,
+// so the PNG shows the clean game frame (no glow/stroke). CPU readback only
+// (glReadPixels); GPU sharing is a later stage. Disabled by default: when
+// %TEMP%\chams-clean-capture.flag is absent this returns immediately with
+// no GL calls and no file writes, so the default rendering path is unchanged.
+inline void capture_clean_frame()
+{
+	using namespace mask_export_detail;
+	if (!flag_present(L"chams-clean-capture.flag"))
+		return;
+
+	static unsigned s_counter = 0;
+	if ((++s_counter % 30) != 0)
+		return;
+	const unsigned frame = g_frame_id.load(std::memory_order_relaxed);
+
+	GLint vp[4] = { 0, 0, 0, 0 };
+	gl.GetIntegerv(GL_VIEWPORT, vp);
+	if (vp[2] <= 0 || vp[3] <= 0)
+		return;
+
+	drain_gl_errors();
+
+	overlay_state_guard guard;
+	pixel_store_guard pack;
+
+	const size_t bytes = static_cast<size_t>(vp[2]) * vp[3] * 4;
+	std::vector<uint8_t> pixels(bytes, 0);
+
+	// Default framebuffer (FBO 0), back buffer. Must run before render_overlay.
+	gl.BindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+	gl.ReadBuffer(GL_BACK);
+	gl.ReadPixels(0, 0, vp[2], vp[3], GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+
+	if (gl_error_pending()) {
+		reshade::log::message(reshade::log::level::warning,
+		                     "[CHAMS-CLEAN] readback GL error (frame %u)", frame);
+		return;
+	}
+
+	// Back-buffer alpha is undefined; force opaque for a valid PNG.
+	for (size_t i = 3; i < bytes; i += 4)
+		pixels[i] = 255;
+
+	wchar_t path[MAX_PATH] = {};
+	if (!temp_png_path(path, MAX_PATH, L"chams-clean-", frame))
+		return;
+	if (!write_png_rgba(path, pixels.data(), static_cast<uint32_t>(vp[2]),
+	                    static_cast<uint32_t>(vp[3]))) {
+		reshade::log::message(reshade::log::level::warning,
+		                     "[CHAMS-CLEAN] PNG write failed (frame %u)", frame);
+		return;
+	}
+	reshade::log::message(reshade::log::level::info,
+	                     "[CHAMS-CLEAN] clean frame exported (frame %u, %dx%d)",
+	                     frame, vp[2], vp[3]);
+}
+
 #else
 // Non-Windows (Linux mock tests): diagnostic is a no-op. The real
 // implementation above only compiles on Windows (MSVC CI).
 void export_mask_if_requested() {}
+void capture_clean_frame() {}
 #endif
