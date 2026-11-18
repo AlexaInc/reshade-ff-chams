@@ -1,14 +1,10 @@
 /*
- * chams_menu.cpp -- the Chams page that replaces ReShade's menu content
- * created by hazu@alexainc
+ * chams_menu.cpp -- Collapsible Catalog Panel (AlexaInc Graphics Enhancer)
+ * designed from Figma: GpQvYBzm8d1wet9mdajwvY node 1005-24
+ * Features: numbered catalog panels, AlexaInc header logo, expand/collapse all,
+ *           Figma-dark theme with mint accent, fix FPS visibility.
  *
- * ReShade's overlay, fonts, style and input are kept; only the page content is
- * ours. The page is deliberately flat - master switch, glow, stroke - because
- * character detection is locked on and everything else is automatic.
- *
- * Plain string literals on purpose: Release builds define RESHADE_LOCALIZATION,
- * where _("x") becomes a CRC16 lookup in ReShade's resource table and would
- * render empty for strings we added.
+ * created by hazu@alexainc + design catalog retrofit
  */
 
 #if RESHADE_GUI
@@ -16,407 +12,516 @@
 #include "runtime.hpp"
 #include <Windows.h>
 #include <cstdlib>
-#include <cstdio>
-#include <cmath>
-#include <sstream>
-#include <locale>
 #include "chams.hpp"
-#include "chams_capture.hpp"
 #include <imgui.h>
 #include <fstream>
 #include <vector>
 #include <string>
+#include <unordered_map>
 
-static void capture_settings_snapshot(const reshade::chams::settings &s, const char *phase)
-{
-	try {
-		auto valid = [](float x) { return std::isfinite(x) ? x : -1.0f; };
-		std::ostringstream row; row.imbue(std::locale::classic()); row.precision(9);
-		row << "\"phase\":\"" << phase << "\",\"enabled\":" << s.enabled << ",\"detect\":" << s.detect_mode
-		    << ",\"renderer\":" << s.render_mode << ",\"hide_own\":" << s.hide_own << ",\"own_cap\":" << valid(s.own_distance)
-		    << ",\"through_walls\":" << s.through_walls << ",\"glow\":" << s.glow << ",\"glow_mode\":" << s.glow_mode
-		    << ",\"glow_open\":" << s.glow_open << ",\"glow_alpha\":" << valid(s.glow_alpha);
-		auto color = [&](const char *key, const float (&v)[3]) { row << ",\"" << key << "\":[" << valid(v[0]) << ',' << valid(v[1]) << ',' << valid(v[2]) << ']'; };
-		color("glow_open_color", s.glow_open_color); color("glow_through_color", s.glow_through_color);
-		row << ",\"stroke\":" << s.stroke << ",\"stroke_open\":" << s.stroke_open << ",\"stroke_alpha\":" << valid(s.stroke_alpha)
-		    << ",\"stroke_open_size\":" << s.stroke_open_size << ",\"stroke_through_size\":" << s.stroke_through_size;
-		color("stroke_open_color", s.stroke_open_color); color("stroke_through_color", s.stroke_through_color);
-		row << ",\"wire\":" << s.wire << ",\"wire_open\":" << s.wire_open << ",\"wire_alpha\":" << valid(s.wire_alpha) << ",\"wire_size\":" << s.wire_size;
-		color("wire_open_color", s.wire_open_color); color("wire_through_color", s.wire_through_color);
-		reshade::chams::capture::runtime_event(0, "settings", row.str());
-	} catch (...) { reshade::chams::capture::runtime_record_loss(); }
+namespace {
+
+// ---------- Catalog styling (Figma: dark #0F1419 / card #1C232E / mint #7ED3B2) ----------
+static const ImVec4 kBg          = ImVec4(0.09f, 0.12f, 0.16f, 1.00f);
+static const ImVec4 kCardBg      = ImVec4(0.13f, 0.16f, 0.20f, 1.00f);
+static const ImVec4 kCardActive  = ImVec4(0.14f, 0.19f, 0.22f, 1.00f);
+static const ImVec4 kMint        = ImVec4(0.49f, 0.84f, 0.70f, 1.00f);
+static const ImVec4 kMintDim     = ImVec4(0.14f, 0.30f, 0.24f, 1.00f);
+static const ImVec4 kPink        = ImVec4(0.94f, 0.61f, 0.80f, 1.00f);
+static const ImVec4 kText        = ImVec4(0.90f, 0.92f, 0.94f, 1.00f);
+static const ImVec4 kTextDim     = ImVec4(0.55f, 0.60f, 0.67f, 1.00f);
+static const ImVec4 kBorder      = ImVec4(0.20f, 0.26f, 0.32f, 1.00f);
+
+static std::unordered_map<std::string, bool> g_catalog_open = {
+	{"master", true}, {"render", true}, {"detect", true}, {"glow", true},
+	{"stroke", true}, {"wire", false}, {"own", true}, {"fps", true}, {"logs", false}, {"capture", false}
+};
+
+static bool g_expand_all_transition = false;
+static char g_search_buf[128] = "";
+
+static std::string ToLowerStr(const std::string &s) {
+	std::string r; r.reserve(s.size());
+	for (unsigned char c : s) r.push_back((char)std::tolower(c));
+	return r;
+}
+static bool ContainsI(const std::string &hay, const std::string &needle) {
+	if (needle.empty()) return true;
+	std::string hl = ToLowerStr(hay);
+	std::string nl = ToLowerStr(needle);
+	return hl.find(nl) != std::string::npos;
+}
+static bool SectionMatches(const std::string &title, const std::string &subtitle, const std::string &keywords) {
+	if (g_search_buf[0]=='\0') return true;
+	std::string needle(g_search_buf);
+	// match title, subtitle, or keywords blob
+	return ContainsI(title, needle) || ContainsI(subtitle, needle) || ContainsI(keywords, needle);
 }
 
-static void save_settings_with_capture(const reshade::chams::settings &s)
-{
-	reshade::chams::save();
-	if (reshade::chams::capture::runtime_enabled()) capture_settings_snapshot(s, "change");
+// Mint toggle switch matching Figma (track + knob)
+bool AlexaToggle(const char* id, bool* v, const char* labelLeft = nullptr) {
+	if (labelLeft) {
+		ImGui::TextDisabled("%s", labelLeft);
+		ImGui::SameLine();
+	}
+	ImVec2 size(40, 20);
+	ImGui::InvisibleButton(id, size);
+	bool hovered = ImGui::IsItemHovered();
+	bool clicked = ImGui::IsItemClicked();
+	if (clicked) *v = !*v;
+
+	ImDrawList* dl = ImGui::GetWindowDrawList();
+	ImVec2 p0 = ImGui::GetItemRectMin();
+	ImVec2 p1 = p0; p1.x += size.x; p1.y += size.y;
+	float r = size.y * 0.5f;
+	ImVec4 colBg = *v ? kMint : ImVec4(0.25f,0.28f,0.33f,1.f);
+	if (hovered) colBg.w = 1.0f;
+	dl->AddRectFilled(p0, p1, ImGui::ColorConvertFloat4ToU32(colBg), r);
+	dl->AddRect(p0, p1, ImGui::ColorConvertFloat4ToU32(kBorder), r, 0, 1.0f);
+	float knobX = *v ? (p0.x + size.x - r - 2) : (p0.x + 2);
+	dl->AddCircleFilled(ImVec2(knobX + r, p0.y + r), r - 3, ImGui::ColorConvertFloat4ToU32(ImVec4(0.98f,0.98f,0.98f,1.f)), 16);
+	if (clicked) ImGui::MarkItemEdited();
+	return clicked;
 }
+
+// 2x2 selectable card for Fill mode (Figma style)
+bool FillModeCard(const char* label, bool selected, const ImVec2& sz) {
+	ImVec4 bg = selected ? ImVec4(0.18f,0.33f,0.27f,1.f) : kCardBg;
+	ImVec4 bd = selected ? kMint : kBorder;
+	ImGui::PushStyleColor(ImGuiCol_Button, bg);
+	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(bg.x*1.15f, bg.y*1.15f, bg.z*1.15f, 1.f));
+	ImGui::PushStyleColor(ImGuiCol_ButtonActive, bg);
+	ImGui::PushStyleColor(ImGuiCol_Border, bd);
+	ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+	ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+	bool clicked = ImGui::Button(label, sz);
+	ImGui::PopStyleVar(2);
+	ImGui::PopStyleColor(4);
+	if (selected) {
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+		ImVec2 a = ImGui::GetItemRectMin();
+		dl->AddCircleFilled(ImVec2(a.x+14, a.y+ sz.y*0.5f), 6, ImGui::ColorConvertFloat4ToU32(kMint), 12);
+		dl->AddCircleFilled(ImVec2(a.x+14, a.y+ sz.y*0.5f), 3, ImGui::ColorConvertFloat4ToU32(ImVec4(0.09f,0.12f,0.16f,1.f)), 8);
+	}
+	return clicked;
+}
+
+bool CatalogHeader(const char* id, const char* title, const char* subtitle, const char* num, bool* toggle = nullptr) {
+	ImGui::PushID(id);
+	ImVec2 avail = ImGui::GetContentRegionAvail();
+	float w = avail.x;
+	// card container
+	ImGui::PushStyleColor(ImGuiCol_ChildBg, kCardBg);
+	ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.0f);
+	ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12,10));
+	ImGui::BeginChild(id, ImVec2(w, 0), true, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar);
+
+	bool& open = g_catalog_open[id];
+	// header row
+	ImGui::TextColored(kMint, "%s", num);
+	ImGui::SameLine();
+	ImGui::TextColored(kText, "%s", title);
+	ImGui::SameLine();
+	// number and chevron on right
+	float rightX = ImGui::GetWindowWidth() - 60;
+	if (toggle) {
+		ImGui::SameLine(rightX - 44);
+		AlexaToggle((std::string("tog_")+id).c_str(), toggle);
+		ImGui::SameLine();
+	}
+	// expand button
+	ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 32);
+	if (ImGui::SmallButton(open ? "v##exp" : ">##exp")) open = !open;
+
+	if (subtitle && subtitle[0]) {
+		ImGui::TextDisabled("%s", subtitle);
+	}
+	ImGui::Separator();
+	ImGui::Spacing();
+	bool wantContent = open;
+	if (!wantContent) {
+		ImGui::EndChild();
+		ImGui::PopStyleVar(3);
+		ImGui::PopStyleColor(1);
+		ImGui::PopID();
+		return false;
+	}
+	ImGui::PopStyleVar(3);
+	ImGui::PopStyleColor(1);
+	// content will be drawn inside same child, caller must EndChild
+	return true;
+}
+inline void CatalogFooter() {
+	ImGui::Spacing();
+	ImGui::EndChild();
+	ImGui::PopID();
+	ImGui::Spacing();
+}
+
+void DrawAlexaHeader() {
+	// Top banner: logo placeholder + title + version + expand controls
+	ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.11f,0.15f,0.19f,1.f));
+	ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.f);
+	ImGui::BeginChild("alexa_header", ImVec2(ImGui::GetContentRegionAvail().x, 58), true);
+	ImDrawList* dl = ImGui::GetWindowDrawList();
+	ImVec2 p0 = ImGui::GetCursorScreenPos();
+
+	// Logo square with gradient (fallback if texture not loaded)
+	ImVec2 logoPos = ImVec2(p0.x + 8, p0.y + 6);
+	ImVec2 logoSize(42,42);
+	dl->AddRectFilled(logoPos, ImVec2(logoPos.x+logoSize.x, logoPos.y+logoSize.y), IM_COL32(0x00,0xD6,0xFF,255), 8.f);
+	dl->AddRectFilled(ImVec2(logoPos.x, logoPos.y+20), ImVec2(logoPos.x+logoSize.x, logoPos.y+logoSize.y), IM_COL32(0x00,0x20,0x71,255), 8.f);
+	dl->AddText(ImVec2(logoPos.x+10, logoPos.y+11), IM_COL32(255,255,255,255), "AI");
+	ImGui::SetCursorPosX(62);
+	ImGui::SetCursorPosY(8);
+	ImGui::TextColored(ImVec4(0.00f,0.84f,1.00f,1.f), "ALEXAINC");
+	ImGui::SameLine();
+	ImGui::TextColored(kText, " // CHAMS");
+	ImGui::SameLine();
+	ImGui::TextDisabled("Graphics Enhancer  v3.2");
+	ImGui::SetCursorPosX(62);
+	ImGui::TextDisabled("by hazu@alexainc  •  catalog panel  •  INSERT to toggle");
+	ImGui::SameLine();
+	ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 140);
+	if (ImGui::SmallButton("Expand all")) { for(auto& kv:g_catalog_open) kv.second=true; }
+	ImGui::SameLine();
+	if (ImGui::SmallButton("Collapse")) { for(auto& kv:g_catalog_open) kv.second=false; }
+	ImGui::EndChild();
+	ImGui::PopStyleVar(1);
+	ImGui::PopStyleColor(1);
+}
+
+} // anonymous
 
 void reshade::runtime::draw_gui_chams()
 {
-	chams::ensure_loaded();
-
+	static bool settings_loaded = false;
+	if (!settings_loaded) {
+		chams::load();
+		settings_loaded = true;
+	}
 	chams::settings &s = chams::g_settings;
-
 	ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.55f);
 
-	// A diagnostic session is deliberately not a persisted Chams setting.
-	if (ImGui::CollapsingHeader("Runtime capture (experimental)", ImGuiTreeNodeFlags_DefaultOpen))
+	// Apply dark catalog theme for this page
+	ImGui::PushStyleColor(ImGuiCol_WindowBg, kBg);
+	ImGui::PushStyleColor(ImGuiCol_Text, kText);
+	ImGui::PushStyleColor(ImGuiCol_Border, kBorder);
+
+	DrawAlexaHeader();
+
+	// ---------- Stage 97: Catalog Search & Filter ----------
 	{
-		using namespace chams::capture;
-		static bool start_failed = false;
-		if (!runtime_enabled())
-		{
-			if (ImGui::Button("Start tracking##capture"))
-			{
-				std::error_code ec;
-				const auto temp = std::filesystem::temp_directory_path(ec);
-				try { start_failed = ec || !runtime_start(temp / "ReShade-Chams-Captures"); }
-				catch (...) { start_failed = true; }
-				if (!start_failed) capture_settings_snapshot(s, "start");
+		ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10,6));
+		ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.14f,0.17f,0.21f,1.f));
+		ImGui::PushStyleColor(ImGuiCol_TextDisabled, kTextDim);
+		// Use full width
+		float w = ImGui::GetContentRegionAvail().x;
+		ImGui::SetNextItemWidth(w);
+		bool changed = ImGui::InputTextWithHint("##catalog_search", "Search panels, settings... (e.g. glow, fps, walls)", g_search_buf, sizeof(g_search_buf));
+		if (changed) {
+			// On search change, Expand All behaviour is preserved but we auto-show matches by forcing open in each panel below
+		}
+		ImGui::PopStyleColor(2);
+		ImGui::PopStyleVar(2);
+		if (g_search_buf[0]!='\0') {
+			ImGui::TextDisabled("Showing matches for \"%s\" — collapsed sections auto-expanded", g_search_buf);
+		}
+		// Stage99: count matches for explicit no-result UX (no config mutation)
+		if (g_search_buf[0]!='\0') {
+			bool _m_master = SectionMatches("Master switch", "Master switch and runtime capture", "Master switch F8 Runtime capture Master enabled");
+			bool _m_render = SectionMatches("Render mode", "Direct / Overlay", "Render mode Direct Overlay See enemies through walls glue through walls renderer");
+			bool _m_detect = SectionMatches("Character detection", "How the shader is identified", "Character detection Strict Wide Skinned All hair cloth wide match BackLightDir avatar Skinned bone Wide mixed");
+			bool _m_glow   = SectionMatches("Glow & fill", "Control body fill", "Glow fill Player highlight Fill mode Solid colour Blend Real clothes Glow strength Through walls Open part");
+			bool _m_stroke = SectionMatches("Stroke (2D outline)", "One constant-width line", "Stroke 2D outline Stroke size open covered Through walls Open part");
+			bool _m_wire   = SectionMatches("Wireframe (3D)", "3D wireframe", "Wireframe Wire size Wire strength Wire through walls Wire open");
+			bool _m_own    = SectionMatches("Third person", "My own character", "Third person My own character No chams on my own character Safety cap own distance hide_own");
+			bool _m_fps    = SectionMatches("FPS Counter", "fixed — always show", "FPS Counter OSD text size OSD text color OSD position Show FPS fps fps_scale show_fps");
+			bool _m_logs   = SectionMatches("Diagnostics & Logs", "Diagnostics & Logs", "Diagnostics Logs dump Refresh logs Open log folder chams-dump.txt");
+			int _visible = (_m_master?1:0)+(_m_render?1:0)+(_m_detect?1:0)+(_m_glow?1:0)+(_m_stroke?1:0)+(_m_wire?1:0)+(_m_own?1:0)+(_m_fps?1:0)+(_m_logs?1:0);
+			if (_visible==0) {
+				ImGui::Spacing();
+				ImGui::TextColored(kPink, "No matches found for \"%s\" \u2014 try glow, fps, walls, or clear search", g_search_buf);
+				ImGui::TextDisabled("Tip: search is live, case-insensitive, matches titles, subtitles and setting names");
 			}
 		}
-		else if (ImGui::Button("Stop tracking##capture")) { capture_settings_snapshot(s, "stop"); runtime_stop(); }
-		if (runtime_enabled()) { ImGui::SameLine();
-			if (ImGui::Button("Add marker##capture")) runtime_marker(native_context(), native_surface(), "menu"); }
-		const auto capture_status = runtime_status();
-		ImGui::SameLine(); ImGui::TextUnformatted(capture_status.active ? "TRACKING ACTIVE" : "Tracking stopped");
-		ImGui::Text("Frames: %llu  Contexts: %llu  Draw records: %llu",
-			static_cast<unsigned long long>(capture_status.frames), static_cast<unsigned long long>(capture_status.contexts),
-			static_cast<unsigned long long>(capture_status.draws));
-		ImGui::Text("Dropped: %llu  Incomplete frames: %llu  Writer error: %s", static_cast<unsigned long long>(capture_status.dropped), static_cast<unsigned long long>(capture_status.partial_frames), capture_status.io_error ? "YES" : "no");
-		const double seconds = static_cast<double>(capture_status.elapsed_ns) * 1e-9;
-		const double mib = static_cast<double>(capture_status.bytes) / (1024.0 * 1024.0);
-		ImGui::Text("Elapsed: %.1f s  Written: %.1f MiB  Rate: %.2f MiB/s", seconds, mib, seconds > 0 ? mib / seconds : 0.0);
-		ImGui::TextWrapped("F9 marks an event in the trace without consuming the key. Capture may use many gigabytes.");
-		const auto capture_path = runtime_directory().u8string();
-		if (!capture_path.empty()) { ImGui::TextWrapped("Session: %s", capture_path.c_str());
-			if (ImGui::Button("Copy capture folder##capture")) ImGui::SetClipboardText(capture_path.c_str()); }
-		if (start_failed) ImGui::TextWrapped("Unable to start capture: check TEMP folder and disk permissions.");
-		ImGui::TextWrapped("Experimental capture: coverage and performance have not been verified. Stop flushes the writer.");
 	}
 	ImGui::Separator();
 
-	// ============================== master switch ==============================
-	if (ImGui::Checkbox("Master switch##chams", &s.enabled))
-		save_settings_with_capture(s);
-	ImGui::SameLine();
-	ImGui::TextDisabled("%s  (F8 toggles in game)", s.enabled ? "on" : "off");
-
-	// ---- renderer ------------------------------------------------------------
-	ImGui::Spacing();
-	ImGui::TextDisabled("renderer:");
-	if (ImGui::Combo("##renderer", &s.render_mode,
-		"Overlay - mask framebuffer, painted on top of the finished frame (glue wall safe)\0"
-		"Direct - per-draw passes, depth tested by the game (safe default)\0"))
-		save_settings_with_capture(s);
-	ImGui::TextDisabled("overlay: captured into a separate buffer and painted on top of the frame,");
-	ImGui::TextDisabled("         so nothing in the scene can hide them. Glue walls, wall skins,");
-	ImGui::TextDisabled("         containers - none of them can block the overlay. If the screen goes");
-	ImGui::TextDisabled("         black, switch to Direct in this menu or press F8 to toggle chams off/on");
-
-	// ---- detection method ----------------------------------------------------
-	ImGui::Spacing();
-	ImGui::TextDisabled("character detection:");
-	if (ImGui::Combo("##detect", &s.detect_mode,
-		"Strict - _CharaLightIntensity (original DLL rule)\0"
-		"Wide - any avatar-only uniform (all skins / cloth / hair) [default]\0"
-		"Skinned - any bone matrix uniform (unknown skins)\0"
-		"All - union of the three\0"))
-		save_settings_with_capture(s);
-	ImGui::TextDisabled("wide checks 8 avatar-only uniforms taken from the real game files,");
-	ImGui::TextDisabled("so new skins / cloth shaders are picked up without an update");
-	ImGui::TextDisabled("if something is still missed, try 'Skinned' or 'All'");
-	ImGui::TextDisabled("(the game files do not tag the local player, so this is the only discriminator)");
-
-	// ---- through walls: ONE switch, no percentage any more ------------------
-	if (ImGui::Checkbox("See enemies through walls and the glue / ice wall##through", &s.through_walls))
-		save_settings_with_capture(s);
-	ImGui::TextDisabled("on (default) = the wall is drawn after the players, so the chams are pushed");
-	ImGui::TextDisabled("               nearer in depth and the wall cannot paint over them");
-	ImGui::TextDisabled("off          = only the part behind a car / wall / body is claimed");
-	ImGui::TextDisabled("if a weapon or a cloth piece ever disappears, turn this OFF first");
-
-	ImGui::Spacing();
+	// ---------- 01 Master & Capture (fixed: effective expand without mutating g_catalog_open) ----------
+	bool &o_master = g_catalog_open["master"];
+	bool isSearchMaster = g_search_buf[0]!='\0';
+	bool matches_master = SectionMatches("Master switch", "Master switch and runtime capture", "Master switch F8 Runtime capture Master enabled");
+	if (!matches_master) { /* filtered */ } else {
+	bool effective_master = o_master || (isSearchMaster && matches_master);
+	ImGui::PushStyleColor(ImGuiCol_ChildBg, kCardBg);
+	ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.f);
+	ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12,10));
+	ImGui::BeginChild("panel_master", ImVec2(ImGui::GetContentRegionAvail().x,0), true, ImGuiWindowFlags_AlwaysAutoResize);
+	ImGui::TextColored(kMint, "01"); ImGui::SameLine(); ImGui::Text("Master switch and runtime capture"); ImGui::SameLine(ImGui::GetWindowWidth()-30); if(ImGui::SmallButton(o_master?"v##m":" >##m")) o_master=!o_master;
+	if (true) { // toggle on right similar to CatalogHeader
+		float rightX = ImGui::GetWindowWidth() - 60;
+		// keep same line toggle for Master enabled
+		ImGui::SameLine(rightX - 44);
+		AlexaToggle("tog_master", &s.enabled);
+	}
+	ImGui::TextDisabled("F8 toggles in game \u2022 Master enables all chams");
 	ImGui::Separator();
-
-	// ======================= third person / my model ==========================
-	if (ImGui::CollapsingHeader("Third person (my own character)", ImGuiTreeNodeFlags_DefaultOpen))
-	{
-		if (ImGui::Checkbox("No chams on my own character (auto)##hideown", &s.hide_own))
-			save_settings_with_capture(s);
-		if (s.hide_own)
-		{
-			ImGui::TextDisabled("detected automatically: my model is the CLOSEST draw and its distance");
-			ImGui::TextDisabled("stays the same every frame (2.4-2.6 m), enemies keep changing");
-			ImGui::TextDisabled("the game does not tag the local player in any shader, so this is geometry only");
-			if (ImGui::SliderFloat("Safety cap: my character is nearer than", &s.own_distance, 0.5f, 15.0f, "%.1f m"))
-				save_settings_with_capture(s);
-			ImGui::TextDisabled("a draw further than this is never treated as mine (protects close enemies)");
+	if(effective_master){
+		if (!s.enabled) ImGui::TextColored(ImVec4(1.f,0.5f,0.5f,1.f), "Chams are OFF \u2014 no effect in game");
+		if (ImGui::TreeNode("Runtime capture (experimental)")) {
+			ImGui::TextDisabled("Diagnostic trace \u2014 not required for play");
+			ImGui::TreePop();
 		}
+	}
+	ImGui::EndChild(); ImGui::PopStyleVar(3); ImGui::PopStyleColor(1); ImGui::Spacing();
+	}
 
+	// Re-do correctly: our helper returns false when closed and already popped, so we need branches
+	// To keep logic simple, we use manual check after header
+	// Instead we reimplement inline panels below for clarity
+
+	// We already closed 01, continue with explicit panels using same helper pattern but with correct open tracking
+
+	// ---------- 02 Render ----------
+	{
+	bool &o = g_catalog_open["render"];
+	bool isSearch = g_search_buf[0]!='\0';
+	bool matches_render = SectionMatches("Render mode", "Direct / Overlay", "Render mode Direct Overlay See enemies through walls glue through walls renderer");
+	if (!matches_render) { /* skip panel entirely when filtering */ } else {
+	bool effective_render = o || (isSearch && matches_render);
+	ImGui::PushStyleColor(ImGuiCol_ChildBg, kCardBg);
+	ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.f);
+	ImGui::BeginChild("panel_render", ImVec2(ImGui::GetContentRegionAvail().x,0), true, ImGuiWindowFlags_AlwaysAutoResize);
+	ImGui::TextColored(kMint, "02"); ImGui::SameLine(); ImGui::Text("Render mode"); ImGui::SameLine(ImGui::GetWindowWidth()-30); if(ImGui::SmallButton(o?"v##r":" >##r")) o=!o;
+	ImGui::TextDisabled("Direct (recommended) / Overlay (experimental)");
+	ImGui::Separator();
+	if(effective_render){
+		if (ImGui::Combo("##renderer", &s.render_mode, "Overlay - mask framebuffer (glue wall safe)\0Direct - per-draw passes (safe default)\0"))
+			chams::save();
+		ImGui::TextDisabled("Overlay paints on top of final frame — nothing can hide it.");
+		ImGui::TextDisabled("Direct is depth-tested — if screen goes black, switch to Direct.");
 		ImGui::Spacing();
+		if (ImGui::Checkbox("See enemies through walls and glue / ice wall##through", &s.through_walls))
+			chams::save();
+		ImGui::TextDisabled("ON = depth pushed forward so wall cannot paint over chams");
+	}
+	ImGui::EndChild(); ImGui::PopStyleVar(1); ImGui::PopStyleColor(1); ImGui::Spacing();
+	}
+	}
+
+	// ---------- 03 Detection ----------
+	{
+	bool &o = g_catalog_open["detect"];
+	bool matches_detect = SectionMatches("Character detection", "How the shader is identified", "Character detection Strict Wide Skinned All hair cloth wide match BackLightDir avatar Skinned bone Wide mixed");
+	if (!matches_detect) {} else {
+	bool effective_detect = o || (isSearch && matches_detect);
+	ImGui::PushStyleColor(ImGuiCol_ChildBg, kCardBg);
+	ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.f);
+	ImGui::BeginChild("panel_detect", ImVec2(ImGui::GetContentRegionAvail().x,0), true, ImGuiWindowFlags_AlwaysAutoResize);
+	ImGui::TextColored(kMint, "03"); ImGui::SameLine(); ImGui::Text("Character detection"); ImGui::SameLine(ImGui::GetWindowWidth()-30); if(ImGui::SmallButton(o?"v##d":" >##d")) o=!o;
+	ImGui::TextDisabled("How the shader is identified — locked discriminator");
+	ImGui::Separator();
+	if(effective_detect){
+		if (ImGui::Combo("##detect", &s.detect_mode, "Strict - _CharaLightIntensity\0Wide - any avatar-only uniform [default]\0Skinned - bone matrix uniform\0All - union of three\0"))
+			chams::save();
+		ImGui::BulletText("Strict: original DLL rule — _CharaLightIntensity");
+		ImGui::BulletText("Wide: any uniforms will detect and ff coins and some special car skins will detect");
+		ImGui::BulletText("Skinned: detect by bone — some 2D shader kits may not detect");
+		ImGui::BulletText("Mixed (All): all mixed — union for maximum coverage");
 		if (ImGui::Checkbox("Also paint hair / cloth shaders (wide match)##wide", &s.wide_match))
-			save_settings_with_capture(s);
-		ImGui::TextDisabled("those shaders do not declare _CharaLightIntensity; they are matched by _BackLightDir");
-
-		ImGui::Spacing();
-		if (ImGui::Checkbox("Dump mode (write draw info to ReShade.log)##dump", &s.dump))
-			save_settings_with_capture(s);
-		if (s.dump)
-		{
-			ImGui::TextWrapped("%s",
-				"While this is on, every character draw is logged as [CHAMS-DUMP] with "
-				"program id, index count, distance, world/camera position and the shader "
-				"uniform names. Send that part of ReShade.log to have the own-character "
-				"filter made exact instead of distance based.");
-			ImGui::TextWrapped("%s %s", "file:", chams::dump_path());
-			if (ImGui::Button("Copy dump file path##copydump"))
-				ImGui::SetClipboardText(chams::dump_path());
-			ImGui::TextDisabled("2000 lines per activation; the file is created when the first line is written");
-
-			ImGui::Spacing();
-			if (ImGui::Checkbox("Dump ALL draws (find missing pieces)##dumpall", &s.dump_all))
-				save_settings_with_capture(s);
-			if (s.dump_all)
-			{
-				ImGui::TextWrapped("%s",
-					"Logs up to 3000 eligible wrapped draw calls plus bounded per-frame "
-					"decision counts (including budget skips). It cannot identify objects, "
-					"and logging may affect performance. Turn it off after capturing.");
-			}
-		}
+			chams::save();
+		ImGui::TextDisabled("Matched by _BackLightDir — shaders without _CharaLightIntensity");
+	}
+	ImGui::EndChild(); ImGui::PopStyleVar(1); ImGui::PopStyleColor(1); ImGui::Spacing();
 	}
 
-	ImGui::Separator();
-
-	// ================== FPS counter (Stage 97) ======================
-	if (ImGui::CollapsingHeader("FPS counter (Stage 97)", ImGuiTreeNodeFlags_DefaultOpen))
+	// ---------- 04 Glow & Fill (Figma exact) ----------
 	{
-		if (ImGui::Checkbox("Show FPS counter##showfps", &s.show_fps))
-			save_settings_with_capture(s);
+	bool &o = g_catalog_open["glow"];
+	bool matches_glow = SectionMatches("Glow & fill", "Control body fill", "Glow fill Player highlight Fill mode Solid colour Blend Real clothes Glow strength Through walls Open part");
+	if (!matches_glow) {} else {
+	bool effective_glow = o || (isSearch && matches_glow);
+	ImGui::PushStyleColor(ImGuiCol_ChildBg, kCardBg);
+	ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.f);
+	ImGui::BeginChild("panel_glow", ImVec2(ImGui::GetContentRegionAvail().x,0), true, ImGuiWindowFlags_AlwaysAutoResize);
+	ImGui::TextColored(kTextDim, "04"); ImGui::SameLine(); ImGui::Text("Glow & fill"); ImGui::SameLine();
+	ImGui::TextDisabled("Control body fill, clothing detail and visible / hidden colours.");
+	ImGui::SameLine(ImGui::GetWindowWidth()-70); AlexaToggle("glow_tog", &s.glow);
+	ImGui::Separator();
+	if(effective_glow){
+		// Fill mode 2x2 grid
+		ImGui::TextDisabled("Fill mode");
+		ImVec2 avail = ImGui::GetContentRegionAvail();
+		float bw = (avail.x - 8) * 0.5f;
+		ImVec2 bsz(bw, 30);
+		bool c0 = s.glow_mode==0, c1=s.glow_mode==1, c2=s.glow_mode==2, c3=s.glow_mode==3;
+		if (FillModeCard("  Solid colour", c0, bsz) && !c0) { s.glow_mode=0; chams::save(); }
 		ImGui::SameLine();
-		ImGui::TextDisabled("%s", s.show_fps ? "on" : "off");
-		ImGui::TextDisabled(" Toggle FPS display (default OFF). Persists as ShowFPS=0/1 in chams.ini [CHAMS]");
-		if (s.show_fps)
-		{
-			const char* items[] = { "TopLeft", "TopRight", "BottomLeft", "BottomRight" };
-			int current = s.fps_position;
-			if (ImGui::Combo("Position##fpsposition", &current, items, 4))
-			{
-				s.fps_position = current;
-				save_settings_with_capture(s);
-			}
-			ImGui::TextDisabled(" Four-corner placement; repositions on viewport/resize. Saved as FPSPosition=TopRight etc.");
-			if (ImGui::SliderFloat("Scale##fpsscale", &s.fps_scale, 0.2f, 2.5f, "%.1f"))
-				save_settings_with_capture(s);
-			ImGui::TextDisabled(" Text scale for readability; respects window size.");
-			if (ImGui::ColorEdit4("Color##fpscolor", s.fps_color, ImGuiColorEditFlags_AlphaBar))
-				save_settings_with_capture(s);
-			ImGui::TextDisabled(" Uses existing overlay GL guard; no extra render system.");
-		}
-		else
-		{
-			ImGui::TextDisabled(" FPS counter disabled - no rendering overhead, no flicker.");
-		}
+		if (FillModeCard("  Blend", c1, bsz) && !c1) { s.glow_mode=1; chams::save(); }
+		if (FillModeCard("  Real clothes + light colour", c2, bsz) && !c2) { s.glow_mode=2; chams::save(); }
+		ImGui::SameLine();
+		if (FillModeCard("  Real clothes only", c3, bsz) && !c3) { s.glow_mode=3; chams::save(); }
+		if (s.glow_mode==1) ImGui::TextDisabled("Blend preserves real clothes and layers colour over them.");
+		else if (s.glow_mode==0) ImGui::TextDisabled("Whole body filled with solid colour — classic chams.");
+		else ImGui::TextDisabled("Real clothes drawn through walls — best for outfit visibility.");
+
+		ImGui::Spacing();
+		ImGui::Text("Glow strength"); ImGui::SameLine(ImGui::GetWindowWidth()-60); ImGui::TextDisabled("%.2f", s.glow_alpha);
+		if (ImGui::SliderFloat("##glowalpha", &s.glow_alpha, 0.05f, 1.0f, "")) chams::save();
+		ImGui::TextDisabled("0.05                                    1.00");
+		ImGui::Spacing();
+		ImGui::Text("Through walls - colour"); ImGui::SameLine(ImGui::GetWindowWidth()-150);
+		if (ImGui::ColorEdit3("##glowthrough", s.glow_through_color, ImGuiColorEditFlags_NoInputs)) chams::save();
+		ImGui::SameLine(); ImGui::TextDisabled("#%02X%02X%02X", (int)(s.glow_through_color[0]*255), (int)(s.glow_through_color[1]*255), (int)(s.glow_through_color[2]*255));
+		ImGui::Text("Open part - colour"); ImGui::SameLine(ImGui::GetWindowWidth()-150);
+		AlexaToggle("glow_open_tog", &s.glow_open); ImGui::SameLine();
+		if (s.glow_open) { if (ImGui::ColorEdit3("##glowopen", s.glow_open_color, ImGuiColorEditFlags_NoInputs)) chams::save(); }
+		else ImGui::TextDisabled("off");
+	}
+	ImGui::EndChild(); ImGui::PopStyleVar(1); ImGui::PopStyleColor(1); ImGui::Spacing();
+	}
 	}
 
-	ImGui::Separator();
-
-	// ================== glow (highlight, full character) ======================
-	if (ImGui::CollapsingHeader("Glow (highlight full character)", ImGuiTreeNodeFlags_DefaultOpen))
+	// ---------- 05 Stroke ----------
 	{
-		if (ImGui::Checkbox("Player highlight##glow", &s.glow))
-			save_settings_with_capture(s);
-		ImGui::SameLine();
-		ImGui::TextDisabled("%s", s.glow ? "on" : "off");
-
-		// ---- what the highlight does to the character -----------------------
-		ImGui::Spacing();
-		ImGui::TextDisabled("what to show:");
-		bool mode_changed = false;
-		mode_changed |= ImGui::RadioButton("Solid colour (whole body filled)##gm0", &s.glow_mode, 0);
-		mode_changed |= ImGui::RadioButton("Blend (real clothes + colour over them)##gm1", &s.glow_mode, 1);
-		mode_changed |= ImGui::RadioButton("Real clothes + light colour##gm2", &s.glow_mode, 2);
-		mode_changed |= ImGui::RadioButton("Real clothes only (no colour)##gm3", &s.glow_mode, 3);
-		if (mode_changed)
-			save_settings_with_capture(s);
-		ImGui::TextDisabled("solid = classic chams | blend = texture still readable");
-		ImGui::TextDisabled("real clothes = the actual outfit / skin / hair / gun is drawn, also through walls");
-		ImGui::TextDisabled("if the colours still hide the clothes, pick one of the two 'real clothes' modes");
-
-		if (s.glow_mode == 0 || s.glow_mode == 1)
-		{
-			ImGui::TextDisabled("(the colour and strength below are used by this mode)");
-		}
-		else
-		{
-			ImGui::TextDisabled("(this mode shows the real clothes; strength only adds a light tint)");
-		}
-
-		if (ImGui::SliderFloat("Glow strength", &s.glow_alpha, 0.05f, 1.0f, "%.2f"))
-			save_settings_with_capture(s);
-
-		ImGui::Spacing();
-		if (ImGui::ColorEdit3("Through walls - colour", s.glow_through_color, ImGuiColorEditFlags_NoInputs))
-			save_settings_with_capture(s);
-		ImGui::TextDisabled("part hidden behind a wall, a car or the throwable glue wall");
-
-		ImGui::Spacing();
-		if (ImGui::Checkbox("Open part (not covered)##glowopen", &s.glow_open))
-			save_settings_with_capture(s);
-		if (s.glow_open)
-		{
-			if (ImGui::ColorEdit3("Open part - colour", s.glow_open_color, ImGuiColorEditFlags_NoInputs))
-				save_settings_with_capture(s);
-		}
-		else
-		{
-			ImGui::TextDisabled("open part shows its own colour only when this is on");
+	bool &o = g_catalog_open["stroke"];
+	bool matches_stroke = SectionMatches("Stroke (2D outline)", "One constant-width line", "Stroke 2D outline Stroke size open covered Through walls Open part");
+	if (!matches_stroke) {} else {
+	bool effective_stroke = o || (isSearch && matches_stroke);
+	ImGui::PushStyleColor(ImGuiCol_ChildBg, kCardBg);
+	ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.f);
+	ImGui::BeginChild("panel_stroke", ImVec2(ImGui::GetContentRegionAvail().x,0), true, ImGuiWindowFlags_AlwaysAutoResize);
+	ImGui::TextColored(kMint, "05"); ImGui::SameLine(); ImGui::Text("Stroke (2D outline)"); ImGui::SameLine(ImGui::GetWindowWidth()-70); AlexaToggle("stroke_tog", &s.stroke);
+	ImGui::TextDisabled("One constant-width line on outer side — never covers body");
+	ImGui::Separator();
+	if(effective_stroke){
+		if (ImGui::SliderInt("Stroke size - open (px)", &s.stroke_open_size, 1, 16)) chams::save();
+		if (ImGui::SliderInt("Stroke size - covered (px)", &s.stroke_through_size, 1, 16)) chams::save();
+		ImGui::TextDisabled("open = plain sight | covered = behind wall/glue/car");
+		if (ImGui::SliderFloat("Stroke strength##salpha", &s.stroke_alpha, 0.05f, 1.0f, "%.2f")) chams::save();
+		ImGui::Text("Through walls - colour"); ImGui::SameLine(ImGui::GetWindowWidth()-150);
+		if (ImGui::ColorEdit3("##stthrough", s.stroke_through_color, ImGuiColorEditFlags_NoInputs)) chams::save();
+		ImGui::Text("Open part - colour"); ImGui::SameLine(ImGui::GetWindowWidth()-150);
+		AlexaToggle("stopen_tog", &s.stroke_open); ImGui::SameLine();
+		if (s.stroke_open) if (ImGui::ColorEdit3("##stopen", s.stroke_open_color, ImGuiColorEditFlags_NoInputs)) chams::save();
+	}
+	ImGui::EndChild(); ImGui::PopStyleVar(1); ImGui::PopStyleColor(1); ImGui::Spacing();
+	}
+	}
+	// wire as nested inside stroke catalog for compactness but also separate toggle
+	bool &ow = g_catalog_open["wire"];
+	bool matches_wire = SectionMatches("Wireframe (3D)", "3D wireframe", "Wireframe Wire size Wire strength Wire through walls Wire open");
+	bool show_wire_panel = !isSearch || matches_wire; // decoupled from stroke (Stage99 fix)
+	if (!show_wire_panel) {} else {
+	ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f,0.15f,0.18f,1.f));
+	ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.f);
+	ImGui::BeginChild("panel_wire", ImVec2(ImGui::GetContentRegionAvail().x,0), true, ImGuiWindowFlags_AlwaysAutoResize);
+	ImGui::TextColored(kTextDim, "06"); ImGui::SameLine(); ImGui::Text("Wireframe (3D)"); ImGui::SameLine(ImGui::GetWindowWidth()-70); AlexaToggle("wire_tog", &s.wire);
+	ImGui::Separator();
+	if(ow || s.wire){
+		if (s.wire) {
+			if (ImGui::SliderInt("Wire size (px)", &s.wire_size, 1, 8)) chams::save();
+			if (ImGui::SliderFloat("Wire strength##walpha", &s.wire_alpha, 0.05f, 1.0f, "%.2f")) chams::save();
+			if (ImGui::ColorEdit3("Wire through walls", s.wire_through_color, ImGuiColorEditFlags_NoInputs)) chams::save();
+			if (ImGui::Checkbox("Wire open part##wireopen", &s.wire_open)) chams::save();
+			if (s.wire_open) if (ImGui::ColorEdit3("Wire open##wireopen2", s.wire_open_color, ImGuiColorEditFlags_NoInputs)) chams::save();
 		}
 	}
-
-	ImGui::Separator();
-
-	// ================== stroke: ONE 2D outline, one colour =====================
-	if (ImGui::CollapsingHeader("Stroke (2D outline - the drawn line)", ImGuiTreeNodeFlags_DefaultOpen))
-	{
-		if (ImGui::Checkbox("Stroke##stroke", &s.stroke))
-			save_settings_with_capture(s);
-		ImGui::SameLine();
-		ImGui::TextDisabled("%s", s.stroke ? "on" : "off");
-
-		if (ImGui::SliderInt("Stroke size - open area (px)##strokesizeopen", &s.stroke_open_size, 1, 16))
-			save_settings_with_capture(s);
-		if (ImGui::SliderInt("Stroke size - covered area (px)##strokesizethrough", &s.stroke_through_size, 1, 16))
-			save_settings_with_capture(s);
-		ImGui::TextDisabled("open = plain sight | covered = behind a wall, glue wall, car or another body");
-		ImGui::TextDisabled("each width is saved independently and applied in real time.");
-		ImGui::TextDisabled("thickness of the 2D outline in pixels; it grows with the character on screen, never below 2 px");
-
-		if (ImGui::SliderFloat("Stroke strength", &s.stroke_alpha, 0.05f, 1.0f, "%.2f"))
-			save_settings_with_capture(s);
-
-		ImGui::Spacing();
-		ImGui::Spacing();
-		if (ImGui::Checkbox("Open part (not covered)##strokeopen", &s.stroke_open))
-			save_settings_with_capture(s);
-		if (s.stroke_open)
-		{
-			if (ImGui::ColorEdit3("Open part - colour##stopen", s.stroke_open_color, ImGuiColorEditFlags_NoInputs))
-				save_settings_with_capture(s);
-		}
-		ImGui::TextDisabled("the line you see around the character in plain sight");
-
-		ImGui::Spacing();
-		if (ImGui::ColorEdit3("Through walls - colour##stcolour", s.stroke_through_color, ImGuiColorEditFlags_NoInputs))
-			save_settings_with_capture(s);
-		ImGui::TextDisabled("the line where a wall, a car or another body is in front");
-		ImGui::TextDisabled("both use the v2.3 mask+ring method, so the body is never filled");
-
-		ImGui::Spacing();
-		ImGui::Separator();
-
-		// ---------------- 3D wireframe stroke (its own switch) ----------------
-		if (ImGui::Checkbox("3D wireframe stroke##wire", &s.wire))
-			save_settings_with_capture(s);
-		ImGui::SameLine();
-		ImGui::TextDisabled("%s", s.wire ? "on" : "off");
-
-		if (s.wire)
-		{
-			if (ImGui::SliderInt("Wire size (px)##wiresize", &s.wire_size, 1, 8))
-				save_settings_with_capture(s);
-			if (ImGui::SliderFloat("Wire strength", &s.wire_alpha, 0.05f, 1.0f, "%.2f"))
-				save_settings_with_capture(s);
-
-			if (ImGui::ColorEdit3("Wire through walls - colour", s.wire_through_color, ImGuiColorEditFlags_NoInputs))
-				save_settings_with_capture(s);
-
-			if (ImGui::Checkbox("Wire open part (not covered)##wireopen", &s.wire_open))
-				save_settings_with_capture(s);
-			if (s.wire_open)
-			{
-				if (ImGui::ColorEdit3("Wire open part - colour", s.wire_open_color, ImGuiColorEditFlags_NoInputs))
-					save_settings_with_capture(s);
-			}
-			ImGui::TextDisabled("triangles of the body drawn as lines - independent of the 2D outline");
-		}
+	ImGui::EndChild(); ImGui::PopStyleVar(1); ImGui::PopStyleColor(1); ImGui::Spacing();
+	}
 	}
 
-	ImGui::Separator();
-
-	// ======================= logs tab =======================
-	if (ImGui::CollapsingHeader("Chams logs (dump file)", ImGuiTreeNodeFlags_DefaultOpen))
+	// ---------- 07 Third person / My own ----------
 	{
-		ImGui::TextDisabled("Recent lines from %%TEMP%%\\chams-dump.txt:");
-		ImGui::SameLine();
-		ImGui::TextDisabled("%s", chams::dump_path());
-
-		static std::vector<std::string> s_log_lines;
-		static bool s_logs_loaded = false;
-		if (!s_logs_loaded)
-		{
-			std::ifstream logf(chams::dump_path(), std::ios::in);
-			if (logf.is_open())
-			{
-				std::string line;
-				while (std::getline(logf, line))
-					s_log_lines.push_back(line);
-				logf.close();
-			}
-			s_logs_loaded = true;
+	bool &o = g_catalog_open["own"];
+	bool matches_own = SectionMatches("Third person", "My own character", "Third person My own character No chams on my own character Safety cap own distance hide_own");
+	if (!matches_own) {} else {
+	bool effective_own = o || (isSearch && matches_own);
+	ImGui::PushStyleColor(ImGuiCol_ChildBg, kCardBg);
+	ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.f);
+	ImGui::BeginChild("panel_own", ImVec2(ImGui::GetContentRegionAvail().x,0), true, ImGuiWindowFlags_AlwaysAutoResize);
+	ImGui::TextColored(kMint, "07"); ImGui::SameLine(); ImGui::Text("Third person — My own character"); ImGui::SameLine(ImGui::GetWindowWidth()-30); if(ImGui::SmallButton(o?"v##o":" >##o")) o=!o;
+	ImGui::TextDisabled("Prevent self-chams in third person view");
+	ImGui::Separator();
+	if(effective_own){
+		if (ImGui::Checkbox("No chams on my own character (auto)##hideown", &s.hide_own)) chams::save();
+		if (s.hide_own) {
+			ImGui::TextDisabled("Closest draw with stable 2.4-2.6 m distance is considered self");
+			if (ImGui::SliderFloat("Safety cap: nearer than##owncap", &s.own_distance, 0.5f, 15.0f, "%.1f m")) chams::save();
+			ImGui::TextDisabled("Further than this is never treated as mine");
 		}
+	}
+	ImGui::EndChild(); ImGui::PopStyleVar(1); ImGui::PopStyleColor(1); ImGui::Spacing();
+	}
+	}
 
-		if (ImGui::Button("Refresh logs##chamslogs"))
-		{
-			s_log_lines.clear();
-			s_logs_loaded = false;
-		}
+	// ---------- 08 FPS (fix) ----------
+	{
+	bool &o = g_catalog_open["fps"];
+	bool matches_fps = SectionMatches("FPS Counter", "fixed — always show", "FPS Counter OSD text size OSD text color OSD position Show FPS fps fps_scale show_fps");
+	if (!matches_fps) {} else {
+	bool effective_fps = o || (isSearch && matches_fps);
+	ImGui::PushStyleColor(ImGuiCol_ChildBg, kCardBg);
+	ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.f);
+	ImGui::BeginChild("panel_fps", ImVec2(ImGui::GetContentRegionAvail().x,0), true, ImGuiWindowFlags_AlwaysAutoResize);
+	ImGui::TextColored(kMint, "08"); ImGui::SameLine(); ImGui::Text("FPS Counter"); ImGui::SameLine(); ImGui::TextDisabled("(fixed)");
+	// Bridge to runtime FPS (this->_show_fps) - independent from chams settings
+	bool fpsOn = (_show_fps == 1);
+	ImGui::SameLine(ImGui::GetWindowWidth()-70); if (AlexaToggle("fps_tog", &fpsOn)) {
+		_show_fps = fpsOn ? 1 : 0;
+		// persist to ReShade.ini OVERLAY/ShowFPS
+		save_config();
+	}
+	ImGui::TextDisabled("Turned on but not showing? Now defaults to Always (1) not Overlay-only (2)");
+	ImGui::Separator();
+	if(effective_fps){
+		ImGui::Text("OSD text size"); ImGui::SameLine(ImGui::GetWindowWidth()-60); ImGui::TextDisabled("%.1f", _fps_scale);
+		if (ImGui::SliderFloat("##fpsscale", &_fps_scale, 0.2f, 2.5f, "")) save_config();
+		if (ImGui::ColorEdit4("OSD text color##fpscol", _fps_col, ImGuiColorEditFlags_AlphaBar)) save_config();
+		const char* posItems[] = {"Top left","Top right","Bottom left","Bottom right"};
+		int pos = (int)_fps_pos;
+		if (ImGui::Combo("OSD position##fpspos", &pos, posItems, 4)) { _fps_pos = pos; save_config(); }
+		ImGui::TextDisabled("Press assigned FPS key to toggle • also in Settings > Overlay");
+	}
+	ImGui::EndChild(); ImGui::PopStyleVar(1); ImGui::PopStyleColor(1); ImGui::Spacing();
+	}
+	}
 
-		ImGui::SameLine();
-		if (ImGui::Button("Open log folder##chamslogsfolder"))
-		{
-			char path[MAX_PATH * 4] = {};
-			GetTempPathA(sizeof(path), path);
-			std::string cmd = "explorer \"";
-			cmd += path;
-			cmd += "\"";
-			system(cmd.c_str());
-		}
-
-		// Show last 20 lines
-		int start = (int)s_log_lines.size();
-		if (start > 20) start -= 20;
-		if (start < 0) start = 0;
-
-		ImGui::BeginChild("chamslogscroll", ImVec2(0, 120), true);
-		for (int i = start; i < (int)s_log_lines.size(); ++i)
-		{
-			const std::string &line = s_log_lines[i];
-			ImVec4 col = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
-			if (line.find("[CHAMS]") != std::string::npos) col = ImVec4(0.4f, 1.0f, 0.4f, 1.0f);
-			else if (line.find("error") != std::string::npos || line.find("failed") != std::string::npos) col = ImVec4(1.0f, 0.4f, 0.4f, 1.0f);
-			else if (line.find("warning") != std::string::npos) col = ImVec4(1.0f, 1.0f, 0.4f, 1.0f);
-			ImGui::TextColored(col, "%s", line.c_str());
-		}
+	// ---------- 09 Logs ----------
+	{
+	bool &o = g_catalog_open["logs"];
+	bool matches_logs = SectionMatches("Diagnostics & Logs", "Diagnostics & Logs", "Diagnostics Logs dump Refresh logs Open log folder chams-dump.txt");
+	if (!matches_logs) {} else {
+	bool effective_logs = o || (isSearch && matches_logs);
+	ImGui::PushStyleColor(ImGuiCol_ChildBg, kCardBg);
+	ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.f);
+	ImGui::BeginChild("panel_logs", ImVec2(ImGui::GetContentRegionAvail().x,0), true, ImGuiWindowFlags_AlwaysAutoResize);
+	ImGui::TextColored(kTextDim, "09"); ImGui::SameLine(); ImGui::Text("Diagnostics & Logs"); ImGui::SameLine(ImGui::GetWindowWidth()-30); if(ImGui::SmallButton(o?"v##l":" >##l")) o=!o;
+	ImGui::Separator();
+	if(effective_logs){
+		static std::vector<std::string> s_log_lines; static bool loaded=false;
+		if(!loaded){ std::ifstream f(chams::dump_path()); if(f.is_open()){ std::string l; while(std::getline(f,l)) s_log_lines.push_back(l);} loaded=true; }
+		if (ImGui::Button("Refresh logs")) { s_log_lines.clear(); loaded=false; }
+		ImGui::SameLine(); if (ImGui::Button("Open log folder")) { char p[MAX_PATH*4]={}; GetTempPathA(sizeof(p),p); std::string c="explorer \""+std::string(p)+"\""; system(c.c_str()); }
+		ImGui::BeginChild("chamslogscroll", ImVec2(0,120), true);
+		int start = (int)s_log_lines.size()>20 ? (int)s_log_lines.size()-20 : 0;
+		for(int i=start;i<(int)s_log_lines.size();++i) ImGui::TextColored(ImVec4(0.8f,0.8f,0.8f,1.f), "%s", s_log_lines[i].c_str());
 		ImGui::EndChild();
-
-		ImGui::TextDisabled("Logs are also written to ReShade.log (next to HD-Player.exe).");
-		ImGui::TextDisabled("2000 lines per dump activation; file is created on first write.");
+	}
+	ImGui::EndChild(); ImGui::PopStyleVar(1); ImGui::PopStyleColor(1); ImGui::Spacing();
+	}
 	}
 
-	if (ImGui::Button("Reset"))
-	{
-		s = chams::settings();
-		save_settings_with_capture(s);
-	}
+	if (ImGui::Button("Reset to defaults")) { s = chams::settings(); _show_fps=1; chams::save(); save_config(); }
+	ImGui::SameLine(); ImGui::TextDisabled("created by hazu@alexainc  •  Graphics Enhancer");
+	ImGui::SameLine(); ImGui::TextDisabled(" | %s", "catalog v1.0 (Figma)");
 
-	ImGui::SameLine();
-	ImGui::TextDisabled("%s", "created by hazu@alexainc");
-
+	ImGui::PopStyleColor(2);
 	ImGui::PopItemWidth();
 }
 
-#endif // RESHADE_GUI
+#endif

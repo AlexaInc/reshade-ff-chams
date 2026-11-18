@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2048" height="2048" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Alexa Inc logo</title>
+  <desc id="desc">A geometric open-source software logo with an abstract A, network nodes, and an open ring.</desc>
+  <defs>
+    <linearGradient id="markGradient" x1="220" y1="150" x2="820" y2="700" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#63E7F5"/>
+      <stop offset="0.48" stop-color="#5EA7FF"/>
+      <stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+    <linearGradient id="ringGradient" x1="410" y1="560" x2="620" y2="730" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5DE6F3"/>
+      <stop offset="0.5" stop-color="#6AA8FF"/>
+      <stop offset="1" stop-color="#A05CFF"/>
+    </linearGradient>
+    <radialGradient id="orangeGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#FFB85C"/>
+      <stop offset="1" stop-color="#FF7A45"/>
+    </radialGradient>
+    <filter id="softGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="smallGlow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <g fill="none" stroke="url(#markGradient)" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" filter="url(#softGlow)">
+    <!-- Open A / collaboration mark -->
+    <path d="M 215 675 L 400 155 L 512 333 L 624 155 L 809 675"/>
+    <path d="M 215 675 L 328 675"/>
+    <path d="M 696 675 L 809 675"/>
+    <!-- Network connections -->
+    <path d="M 512 333 L 451 472 L 584 505 L 636 649" stroke-width="16"/>
+    <path d="M 451 472 L 584 505" stroke-width="16"/>
+  </g>
+
+  <!-- Network nodes -->
+  <g fill="url(#markGradient)" filter="url(#smallGlow)">
+    <circle cx="512" cy="333" r="19"/>
+    <circle cx="451" cy="472" r="18"/>
+    <circle cx="584" cy="505" r="18"/>
+    <circle cx="636" cy="649" r="15"/>
+  </g>
+
+  <!-- Open-source loop / orbit -->
+  <circle cx="512" cy="650" r="86" fill="none" stroke="url(#ringGradient)" stroke-width="18" filter="url(#softGlow)"/>
+  <circle cx="512" cy="650" r="20" fill="url(#orangeGlow)" filter="url(#smallGlow)"/>
+
+  <!-- Wordmark -->
+  <text x="512" y="830" text-anchor="middle" fill="#DCEBFF" font-family="Inter, Montserrat, Arial, sans-serif" font-size="54" font-weight="500" letter-spacing="18">ALEXA INC</text>
+</svg>
