@@ -56,7 +56,7 @@
  */
 
 #pragma once
-
+#include "fps_counter.hpp" // Stage 97 FPS counter helpers
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
@@ -146,6 +146,13 @@ namespace reshade::chams
 		int   detect_mode             = 1;
 		bool  wide_match              = true;   // kept: mode 1 == old wide match
 		bool  through_walls           = true;   // walls / glue wall must not hide the chams
+		// ---- FPS counter (Stage 97) ----------------------------------------
+		// Default OFF per spec; position selectable four corners; persisted as
+		// ShowFPS (bool) + FPSPosition (string TopLeft/TopRight/BottomLeft/BottomRight)
+		bool  show_fps                = false;  // default OFF
+		int   fps_position            = 0;      // 0 TopLeft 1 TopRight 2 BottomLeft 3 BottomRight default TopLeft
+		float fps_scale               = 1.0f;   // text scale (reuses runtime scale range)
+		float fps_color[4]            = { 1.0f, 1.0f, 0.784314f, 1.0f }; // matches ReShade FPSText
 	};
 
 	extern settings g_settings;

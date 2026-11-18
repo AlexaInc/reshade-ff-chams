@@ -8,6 +8,27 @@
 #include "ini_file.hpp"
 #include "dll_log.hpp"
 #include "chams_config_validation.hpp"
+#include <string>
+
+// FPS position string helpers (Stage 97)
+namespace reshade::chams {
+	inline std::string fps_position_to_string(int pos)
+	{
+		switch (pos) {
+		case 1: return "TopRight";
+		case 2: return "BottomLeft";
+		case 3: return "BottomRight";
+		default: return "TopLeft";
+		}
+	}
+	inline int fps_position_from_string(const std::string &s)
+	{
+		if (s == "TopRight") return 1;
+		if (s == "BottomLeft") return 2;
+		if (s == "BottomRight") return 3;
+		return 0;
+	}
+}
 
 #include <Windows.h>   // GetAsyncKeyState, CreateFileW, GetTempPathW, SHGetFolderPath
 #include <Shlobj.h>    // SHGetFolderPath, CSIDL_APPDATA
@@ -232,6 +253,9 @@ namespace reshade::chams
 		g_settings.glow_mode    = std::clamp(g_settings.glow_mode, 0, 3);
 		g_settings.render_mode  = std::clamp(g_settings.render_mode, 0, 1);
 		g_settings.detect_mode  = std::clamp(g_settings.detect_mode, 0, 3);
+		g_settings.fps_position = std::clamp(g_settings.fps_position, 0, 3);
+		g_settings.fps_scale    = std::clamp(g_settings.fps_scale, 0.2f, 2.5f);
+		clamp_colour(g_settings.fps_color);
 	}
 
 	void load()
@@ -280,6 +304,14 @@ namespace reshade::chams
 		config.get("CHAMS", "DumpAll",            g_settings.dump_all);
 		config.get("CHAMS", "ThroughWalls",       g_settings.through_walls);
 		config.get("CHAMS", "WideMatch",          g_settings.wide_match);
+		config.get("CHAMS", "ShowFPS",            g_settings.show_fps);
+		{
+			std::string fps_pos_str;
+			if (config.get("CHAMS", "FPSPosition", fps_pos_str))
+				g_settings.fps_position = fps_position_from_string(fps_pos_str);
+		}
+		config.get("CHAMS", "FPSScale",           g_settings.fps_scale);
+		config.get("CHAMS", "FPSColor",           g_settings.fps_color);
 
 		// migration: old single StrokeSize key -> the two independent widths
 		int stroke_size_legacy = 0;
@@ -339,6 +371,10 @@ namespace reshade::chams
 		config.set("CHAMS", "DumpAll",            g_settings.dump_all);
 		config.set("CHAMS", "ThroughWalls",       g_settings.through_walls);
 		config.set("CHAMS", "WideMatch",          g_settings.wide_match);
+		config.set("CHAMS", "ShowFPS",            g_settings.show_fps);
+		config.set("CHAMS", "FPSPosition",        fps_position_to_string(g_settings.fps_position));
+		config.set("CHAMS", "FPSScale",           g_settings.fps_scale);
+		config.set("CHAMS", "FPSColor",           g_settings.fps_color);
 
 		if (!config.save())
 			reshade::log::message(reshade::log::level::warning,

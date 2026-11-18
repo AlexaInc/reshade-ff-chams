@@ -36,10 +36,11 @@ namespace reshade::chams
 
 	inline bool valid_config_value(std::string_view key, std::string_view value)
 	{
-		static constexpr std::string_view flags[] = { "Enabled", "Glow", "GlowOpen", "Stroke", "StrokeOpen", "Wire", "WireOpen", "HideOwn", "Dump", "DumpAll", "ThroughWalls", "WideMatch" };
+		static constexpr std::string_view flags[] = { "Enabled", "Glow", "GlowOpen", "Stroke", "StrokeOpen", "Wire", "WireOpen", "HideOwn", "Dump", "DumpAll", "ThroughWalls", "WideMatch", "ShowFPS" };
 		static constexpr std::string_view integers[] = { "GlowMode", "RenderMode", "DetectMode", "StrokeSize", "StrokeSizeOpen", "StrokeSizeThrough", "WireSize" };
-		static constexpr std::string_view numbers[] = { "GlowAlpha", "StrokeAlpha", "WireAlpha", "OwnDistance" };
-		static constexpr std::string_view colors[] = { "GlowThroughColor", "GlowOpenColor", "StrokeThroughColor", "StrokeOpenColor", "WireThroughColor", "WireOpenColor" };
+		static constexpr std::string_view numbers[] = { "GlowAlpha", "StrokeAlpha", "WireAlpha", "OwnDistance", "FPSScale" };
+		static constexpr std::string_view colors[] = { "GlowThroughColor", "GlowOpenColor", "StrokeThroughColor", "StrokeOpenColor", "WireThroughColor", "WireOpenColor", "FPSColor" };
+		static constexpr std::string_view fps_positions[] = { "TopLeft", "TopRight", "BottomLeft", "BottomRight" };
 		value = trim_config(value);
 		for (auto name : flags) if (key == name)
 			return value == "0" || value == "1" || value == "true" || value == "false" || value == "True" || value == "False" || value == "TRUE" || value == "FALSE";
@@ -47,13 +48,35 @@ namespace reshade::chams
 		for (auto name : numbers) if (key == name) return valid_config_number(value, false);
 		for (auto name : colors) if (key == name)
 		{
-			for (int i = 0; i < 3; ++i)
+			// FPSColor is RGBA (4 comps), others are RGB (3 comps) — allow both 3 and 4 for forward compat
+			for (int i = 0; i < 4; ++i)
 			{
 				const size_t sep = value.find(',');
-				if ((i < 2 && sep == value.npos) || (i == 2 && sep != value.npos) || !valid_config_number(value.substr(0, sep), false)) return false;
-				if (sep != value.npos) value.remove_prefix(sep + 1);
+				const bool is_last = (i == 3);
+				const bool expect_sep = (i < 2) || (key == "FPSColor" && i < 3);
+				const bool no_sep_ok = is_last || (i == 2 && key != "FPSColor");
+				if (is_last) {
+					if (sep != value.npos) return false;
+					if (!valid_config_number(value, false)) return false;
+					return true;
+				}
+				if (expect_sep) {
+					if (sep == value.npos) return false;
+					if (!valid_config_number(value.substr(0, sep), false)) return false;
+					value.remove_prefix(sep + 1);
+				} else {
+					// RGB path: 3rd component must be last (no sep)
+					if (sep != value.npos) return false;
+					if (!valid_config_number(value, false)) return false;
+					return true;
+				}
 			}
 			return true;
+		}
+		if (key == "FPSPosition")
+		{
+			for (auto v : fps_positions) if (value == v) return true;
+			return false;
 		}
 		return true; // Preserve unrecognised keys for forward/backward compatibility.
 	}

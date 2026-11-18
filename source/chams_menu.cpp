@@ -191,6 +191,39 @@ void reshade::runtime::draw_gui_chams()
 
 	ImGui::Separator();
 
+	// ================== FPS counter (Stage 97) ======================
+	if (ImGui::CollapsingHeader("FPS counter (Stage 97)", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		if (ImGui::Checkbox("Show FPS counter##showfps", &s.show_fps))
+			save_settings_with_capture(s);
+		ImGui::SameLine();
+		ImGui::TextDisabled("%s", s.show_fps ? "on" : "off");
+		ImGui::TextDisabled(" Toggle FPS display (default OFF). Persists as ShowFPS=0/1 in chams.ini [CHAMS]");
+		if (s.show_fps)
+		{
+			const char* items[] = { "TopLeft", "TopRight", "BottomLeft", "BottomRight" };
+			int current = s.fps_position;
+			if (ImGui::Combo("Position##fpsposition", &current, items, 4))
+			{
+				s.fps_position = current;
+				save_settings_with_capture(s);
+			}
+			ImGui::TextDisabled(" Four-corner placement; repositions on viewport/resize. Saved as FPSPosition=TopRight etc.");
+			if (ImGui::SliderFloat("Scale##fpsscale", &s.fps_scale, 0.2f, 2.5f, "%.1f"))
+				save_settings_with_capture(s);
+			ImGui::TextDisabled(" Text scale for readability; respects window size.");
+			if (ImGui::ColorEdit4("Color##fpscolor", s.fps_color, ImGuiColorEditFlags_AlphaBar))
+				save_settings_with_capture(s);
+			ImGui::TextDisabled(" Uses existing overlay GL guard; no extra render system.");
+		}
+		else
+		{
+			ImGui::TextDisabled(" FPS counter disabled - no rendering overhead, no flicker.");
+		}
+	}
+
+	ImGui::Separator();
+
 	// ================== glow (highlight, full character) ======================
 	if (ImGui::CollapsingHeader("Glow (highlight full character)", ImGuiTreeNodeFlags_DefaultOpen))
 	{

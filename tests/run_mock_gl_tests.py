@@ -1258,14 +1258,27 @@ int main(int argc, char **argv) {
   unsigned succ_before=comp_success().load(std::memory_order_relaxed);
   render_overlay();
   assert(comp_success().load(std::memory_order_relaxed)==succ_before+1);
-  // 2. Independent context: no invalid reuse (ctx 2 has no entry, composite skips).
+  // 2. Independent context: lazy build on swap HGLRC (Stage 88: future-proof, per-context strict, AeonSR-safe).
+  // First composite on new ctx without entry now triggers lazy build (one-time), not ctx_mismatch.
   g_opengl_context=reinterpret_cast<void*>(2);
   assert(ov_find()==nullptr);
-  unsigned mismatch_before=comp_ctx_mismatch().load(std::memory_order_relaxed);
+  unsigned nomask_before2=comp_no_mask().load(std::memory_order_relaxed);
   render_overlay();
-  assert(comp_ctx_mismatch().load(std::memory_order_relaxed)==mismatch_before+1);
-  // 3. Shared context: local FBO/VAO ownership (ctx 2 gets own fbo/vao, different from ctx 1).
-  assert(overlay_build());
+  assert(comp_no_mask().load(std::memory_order_relaxed)==nomask_before2+1); // lazy build succeeded, no mask yet
+  assert(ov_find()!=nullptr && ov().ready && ov().tried);
+  // Second composite without capture still no_mask (needs capture)
+  unsigned nomask_before2b=comp_no_mask().load(std::memory_order_relaxed);
+  render_overlay();
+  assert(comp_no_mask().load(std::memory_order_relaxed)==nomask_before2b+1);
+  // Capture and then composite should succeed
+  overlay_capture_mesh([]{});
+  assert(ov().has_mask);
+  unsigned succ_before2=comp_success().load(std::memory_order_relaxed);
+  render_overlay();
+  assert(comp_success().load(std::memory_order_relaxed)==succ_before2+1);
+  // 3. Shared context: local FBO/VAO ownership (ctx 2 already has own fbo/vao, different from ctx 1).
+  assert(ov().ready);
+
   assert(ov().ready);
   assert(ov().fbo!=fbo1 && ov().vao!=vao1);
   unsigned fbo2=ov().fbo;
