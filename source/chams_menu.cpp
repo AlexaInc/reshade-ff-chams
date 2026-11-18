@@ -316,6 +316,7 @@ void reshade::runtime::draw_gui_chams()
 	// ---------- 03 Detection ----------
 	{
 	bool &o = g_catalog_open["detect"];
+	bool isSearch = g_search_buf[0]!='\0';
 	bool matches_detect = SectionMatches("Character detection", "How the shader is identified", "Character detection Strict Wide Skinned All hair cloth wide match BackLightDir avatar Skinned bone Wide mixed");
 	if (!matches_detect) {} else {
 	bool effective_detect = o || (isSearch && matches_detect);
@@ -342,6 +343,7 @@ void reshade::runtime::draw_gui_chams()
 	// ---------- 04 Glow & Fill (Figma exact) ----------
 	{
 	bool &o = g_catalog_open["glow"];
+	bool isSearch = g_search_buf[0]!='\0';
 	bool matches_glow = SectionMatches("Glow & fill", "Control body fill", "Glow fill Player highlight Fill mode Solid colour Blend Real clothes Glow strength Through walls Open part");
 	if (!matches_glow) {} else {
 	bool effective_glow = o || (isSearch && matches_glow);
@@ -389,6 +391,7 @@ void reshade::runtime::draw_gui_chams()
 	// ---------- 05 Stroke ----------
 	{
 	bool &o = g_catalog_open["stroke"];
+	bool isSearch = g_search_buf[0]!='\0';
 	bool matches_stroke = SectionMatches("Stroke (2D outline)", "One constant-width line", "Stroke 2D outline Stroke size open covered Through walls Open part");
 	if (!matches_stroke) {} else {
 	bool effective_stroke = o || (isSearch && matches_stroke);
@@ -414,8 +417,9 @@ void reshade::runtime::draw_gui_chams()
 	}
 	// wire as nested inside stroke catalog for compactness but also separate toggle
 	bool &ow = g_catalog_open["wire"];
+	bool isSearchWire = g_search_buf[0]!='\0';
 	bool matches_wire = SectionMatches("Wireframe (3D)", "3D wireframe", "Wireframe Wire size Wire strength Wire through walls Wire open");
-	bool show_wire_panel = !isSearch || matches_wire; // decoupled from stroke (Stage99 fix)
+	bool show_wire_panel = !isSearchWire || matches_wire; // decoupled from stroke (Stage99 fix)
 	if (!show_wire_panel) {} else {
 	ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f,0.15f,0.18f,1.f));
 	ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.f);
@@ -438,6 +442,7 @@ void reshade::runtime::draw_gui_chams()
 	// ---------- 07 Third person / My own ----------
 	{
 	bool &o = g_catalog_open["own"];
+	bool isSearch = g_search_buf[0]!='\0';
 	bool matches_own = SectionMatches("Third person", "My own character", "Third person My own character No chams on my own character Safety cap own distance hide_own");
 	if (!matches_own) {} else {
 	bool effective_own = o || (isSearch && matches_own);
@@ -462,6 +467,7 @@ void reshade::runtime::draw_gui_chams()
 	// ---------- 08 FPS (fix) ----------
 	{
 	bool &o = g_catalog_open["fps"];
+	bool isSearch = g_search_buf[0]!='\0';
 	bool matches_fps = SectionMatches("FPS Counter", "fixed — always show", "FPS Counter OSD text size OSD text color OSD position Show FPS fps fps_scale show_fps");
 	if (!matches_fps) {} else {
 	bool effective_fps = o || (isSearch && matches_fps);
@@ -494,6 +500,7 @@ void reshade::runtime::draw_gui_chams()
 	// ---------- 09 Logs ----------
 	{
 	bool &o = g_catalog_open["logs"];
+	bool isSearch = g_search_buf[0]!='\0';
 	bool matches_logs = SectionMatches("Diagnostics & Logs", "Diagnostics & Logs", "Diagnostics Logs dump Refresh logs Open log folder chams-dump.txt");
 	if (!matches_logs) {} else {
 	bool effective_logs = o || (isSearch && matches_logs);
