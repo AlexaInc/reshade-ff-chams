@@ -38,6 +38,7 @@ static std::unordered_map<std::string, bool> g_catalog_open = {
 	{"stroke", true}, {"wire", false}, {"own", false}, {"fps", true}, {"logs", false}
 };
 static char g_search_buf[128] = "";
+static std::unordered_map<std::string, float> s_headerBottomMap;
 
 static std::string ToLowerStr(const std::string &s) {
 	std::string r; r.reserve(s.size());
