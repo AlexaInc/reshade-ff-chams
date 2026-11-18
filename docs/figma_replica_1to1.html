@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ReShade CHAMS — Figma 1:1 Replica (836px)</title>
+<style>
+  :root{
+    --page:#0B0E11;
+    --header:#11171D;
+    --card:#11171D;
+    --inner:#192128;
+    --line:#28323B;
+    --text:#EBF0F3;
+    --dim:#97A6B2;
+    --muted:#687985;
+    --mint:#94E8C1;
+    --mint-dark:#203D34;
+    --mint-text:#94E8C1;
+    --pink:#F09CAD;
+    --cream:#FFFFC8;
+    --w:836px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--page);color:var(--text);font-family:"Inter",system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  .shell{width:var(--w);margin:0 auto;background:var(--page);min-height:100vh;display:flex;flex-direction:column}
+  /* TOP BAR */
+  .topbar{height:70px;background:var(--header);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 24px;position:sticky;top:0;z-index:10}
+  .brand{display:flex;align-items:center;gap:10px;color:var(--text);font-weight:700;letter-spacing:.02em}
+  .brand small{color:var(--dim);font-weight:400}
+  .status{display:flex;align-items:center;gap:8px;color:var(--dim);font-size:12px}
+  .dot{width:6px;height:6px;border-radius:3px;background:var(--mint)}
+  /* CARDS */
+  .page-pad{padding:16px 24px 24px}
+  .card{background:var(--card);border-radius:8px;margin-bottom:12px;overflow:hidden}
+  .row{padding:18px 20px}
+  .divider{height:1px;background:var(--line);margin:0 20px}
+  /* Master */
+  .master{display:flex;align-items:center;justify-content:space-between;padding:16px 20px}
+  .master-left{display:flex;align-items:center;gap:16px}
+  .label{font-size:16px;font-weight:600}
+  .hint{color:var(--dim);font-size:13px}
+  .mint{color:var(--mint)}
+  .badge{padding:5px 10px;background:var(--inner);border-radius:4px;font-size:12px;color:var(--dim)}
+  .badge-mint{background:var(--mint);color:#0B0E11;font-weight:700;border-radius:6px;padding:8px 14px}
+  .badge-dark{background:var(--inner);border-radius:6px;padding:8px 14px;color:var(--text)}
+  /* Toggle 32x18 */
+  .toggle{width:32px;height:18px;border-radius:9px;background:var(--line);position:relative;cursor:pointer;transition:.15s;display:inline-block;vertical-align:middle}
+  .toggle i{position:absolute;top:3px;left:3px;width:12px;height:12px;border-radius:6px;background:var(--dim);transition:.18s;display:block}
+  .toggle.on{background:var(--mint)} .toggle.on i{left:17px;background:#0B0E11}
+  .toggle.off{background:var(--line)}
+  /* Checkbox */
+  .check{width:13px;height:13px;border-radius:2.5px;border:1px solid var(--muted);display:inline-block;background:var(--inner);vertical-align:-2px;margin-right:8px}
+  /* Select */
+  .select{width:294px;height:32px;background:var(--inner);border-radius:5px;color:var(--text);display:flex;align-items:center;justify-content:space-between;padding:0 12px;cursor:pointer;font-size:14px}
+  .select:after{content:"∨";color:var(--dim);font-size:10px}
+  /* Button */
+  .btn{padding:8px 14px;border-radius:6px;font-size:13px;cursor:pointer;border:none}
+  /* Slider */
+  .slider-row{display:flex;align-items:center;justify-content:space-between}
+  .value{width:102px;height:28px;background:var(--inner);border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--text)}
+  .range{width:100%;appearance:none;background:transparent;margin:10px 0}
+  .range::-webkit-slider-runnable-track{height:3px;background:var(--line);border-radius:1.5px}
+  .range::-webkit-slider-thumb{appearance:none;width:12px;height:13px;border-radius:5px;background:var(--mint);margin-top:-5px;cursor:pointer}
+  /* Section header */
+  .section-head{padding:16px 20px;display:flex;align-items:flex-start;gap:10px;cursor:pointer;user-select:none}
+  .chev{color:var(--mint);margin-top:4px;font-size:12px;transition:.15s}
+  .chev.collapsed{transform:rotate(-90deg);color:var(--dim)}
+  .section-title{font-weight:700;font-size:16px}
+  .section-sub{color:var(--dim);font-size:13px;margin-top:4px}
+  .num{margin-left:auto;color:var(--dim);font-size:12px}
+  /* Fill mode 2x2 */
+  .fill-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}
+  .fill-opt{height:34px;background:var(--inner);border-radius:5px;display:flex;align-items:center;gap:10px;padding:0 12px;cursor:pointer;color:var(--dim);font-size:14px;border:1px solid transparent}
+  .fill-opt.active{background:var(--mint-dark);color:var(--mint);border-color:transparent}
+  .dot2{width:12px;height:12px;border-radius:6px;border:1px solid var(--muted);display:inline-block}
+  .fill-opt.active .dot2{background:var(--mint);border-color:var(--mint);box-shadow:0 0 0 2px rgba(148,232,193,.2)}
+  /* Color picker row */
+  .color-row{display:flex;align-items:center;justify-content:space-between;padding:12px 0}
+  .color-chip{width:294px;height:32px;background:var(--inner);border-radius:5px;display:flex;align-items:center;gap:10px;padding:0 10px;font-size:14px}
+  .swatch{width:20px;height:20px;border-radius:4px}
+  .protect{background:var(--inner);border-radius:7px;padding:14px;margin:14px 0}
+  .auto{font-size:10px;letter-spacing:.12em;color:var(--muted);margin-top:18px}
+  .footer-bar{height:32px;background:var(--header);border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 16px;color:var(--dim);font-size:12px}
+  .cats{ display:flex;justify-content:space-between;align-items:center;padding:10px 0 8px;color:var(--mint);font-size:12px;letter-spacing:.08em;font-weight:600}
+  .cats span:last-child{color:var(--dim);font-weight:400}
+  a.mintlink{color:var(--mint);text-decoration:none}
+  @media (max-width:860px){ .shell{width:100%} }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="topbar" style="justify-content:center">
+    <div class="brand" style="font-size:14px;letter-spacing:0.10em;text-transform:uppercase">Chams menu <span style="color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0.02em;margin-left:6px">by</span> <span style="color:var(--mint);font-weight:700;margin-left:2px">AlexaInc</span></div>
+  </div>
+  <div class="page-pad">
+
+    <!-- Master switch -->
+    <div class="card">
+      <div class="master">
+        <div class="master-left">
+          <span class="label">Master switch</span>
+          <span class="toggle on" onclick="this.classList.toggle('on')"><i></i></span>
+          <span class="badge">F8</span>
+          <span class="hint">Toggle in game</span>
+        </div>
+        <div style="text-align:right">
+          <div style="font-weight:600">Default profile</div><div class="hint">chams.ini &nbsp;/&nbsp; CHAMS</div>
+        </div>
+      </div>
+      <div style="padding:0 20px 16px 20px"><span class="hint mint">Chams enabled</span></div>
+    </div>
+
+    <!-- Runtime capture -->
+    <div class="card">
+      <div class="section-head" onclick="toggleCard(this)">
+        <span class="chev">∨</span>
+        <div><div class="section-title">Runtime capture</div><div class="section-sub">Tracking stopped</div></div>
+        <span class="badge" style="margin-left:14px">EXPERIMENTAL</span>
+        <div style="margin-left:auto;display:flex;gap:8px">
+          <button class="btn badge-mint">Start tracking</button>
+          <button class="btn badge-dark">Add marker</button>
+        </div>
+        <span></span>
+      </div>
+      <div class="card-body">
+        <div style="display:flex;gap:16px;color:var(--dim);padding:0 20px 12px;font-size:13px"><span>Frames &nbsp;<b style="color:var(--text);font-weight:500">0</b></span><span>Contexts &nbsp;<b style="color:var(--text);font-weight:500">0</b></span><span>Draw records &nbsp;<b style="color:var(--text);font-weight:500">0</b></span><span>Dropped &nbsp;<b style="color:var(--text);font-weight:500">0</b></span></div>
+        <div class="divider"></div>
+        <div class="row" style="display:flex;align-items:center;justify-content:space-between">
+          <div><span class="check"></span> Dump mode <span class="hint" style="margin-left:12px">Write draw info to ReShade.log · 2,000 lines / activation</span></div>
+          <button class="btn badge-dark">Copy dump path</button>
+        </div>
+        <div class="row" style="display:flex;align-items:center;justify-content:space-between;padding-top:0">
+          <div><span class="check"></span> Dump ALL draws <span class="hint" style="margin-left:12px">Find missing pieces · 3,000 draws</span></div>
+          <span class="hint">Experimental diagnostics</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="cats"><span>CATEGORIES</span><span>6 panels · expanded</span></div>
+
+    <!-- 01 General -->
+    <div class="card">
+      <div class="section-head" onclick="toggleCard(this)"><span class="chev">∨</span><div><div class="section-title">General</div><div class="section-sub">Choose how characters are detected and rendered.</div></div><span class="num">01</span></div>
+      <div class="card-body">
+        <div class="divider"></div>
+        <div class="row slider-row"><div><div class="label">Render mode</div><div class="hint" style="margin-top:4px">Per-draw passes, depth tested by the game. Safe default.</div></div><div class="select">Direct (recommended)</div></div>
+        <div class="divider"></div>
+        <div class="row slider-row"><div><div class="label">Character detection mode</div><div class="hint" style="margin-top:4px">Wide checks 8 avatar-only uniforms for skins, cloth and hair.</div><div class="hint" style="margin-top:6px">Strict · original DLL rule &nbsp;&nbsp; Skinned · bone matrices &nbsp;&nbsp; All · mixed detection</div></div><div class="select">Wide (default)</div></div>
+        <div class="divider"></div>
+        <div class="row" style="display:flex;justify-content:space-between;align-items:center"><div><div class="label">See enemies through walls</div><div class="hint">Includes glue / ice walls. Off: only occluded parts are highlighted.</div></div><span class="toggle on" onclick="this.classList.toggle('on')"><i></i></span></div>
+        <div class="divider"></div>
+        <div class="row" style="display:flex;justify-content:space-between;align-items:center"><div><div class="label">Also paint hair / cloth shaders</div><div class="hint">Wide match uses _BackLightDir instead of _CharaLightIntensity.</div></div><span class="toggle on" onclick="this.classList.toggle('on')"><i></i></span></div>
+        <div class="row hint" style="line-height:1.5">Overlay is experimental: separate mask buffer paints on top of the finished frame.<br><a class="mintlink" href="#">Black screen? Switch to Direct, or toggle F8 off and on.</a></div>
+      </div>
+    </div>
+
+    <!-- 02 Third person -->
+    <div class="card">
+      <div class="section-head" onclick="toggleCard(this)"><span class="chev">∨</span><div><div class="section-title">Third person</div><div class="section-sub">Keep your own character clear without losing nearby enemies.</div></div><span class="num">02</span></div>
+      <div class="card-body">
+        <div class="divider"></div>
+        <div class="row" style="display:flex;justify-content:space-between;align-items:center"><div><div class="label">No chams on my own character</div><div class="hint">Automatically excludes the closest draw with a stable distance of 2.4–2.6 m.</div></div><span class="toggle on" onclick="this.classList.toggle('on')"><i></i></span></div>
+        <div class="row">
+          <div class="slider-row"><span class="label">Safe cap for my character</span><span class="value">3.0 m</span></div>
+          <input class="range" type="range" min="0.5" max="15" step="0.1" value="3.0">
+          <div style="display:flex;justify-content:space-between;color:var(--muted);font-size:12px"><span>0.5 m</span><span>15.0 m</span></div>
+          <div class="protect"><div class="mint" style="font-weight:600">Protect close enemies</div><div class="hint" style="margin-top:4px">A draw farther than the safe cap is never treated as your own character.</div></div>
+          <div class="auto">AUTO DETECTION</div><div class="hint" style="margin-top:4px">Stable distance + nearest draw</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 03 FPS counter -->
+    <div class="card">
+      <div class="section-head" onclick="toggleCard(this)"><span class="chev">∨</span><div><div class="section-title">FPS counter</div><div class="section-sub">A lightweight performance overlay, positioned your way.</div></div><span class="num">03</span></div>
+      <div class="card-body">
+        <div class="divider"></div>
+        <div class="row" style="display:flex;justify-content:space-between"><div><div class="label">Show FPS counter</div><div class="hint">Off by default. Uses the existing overlay GL guard to prevent flicker.</div></div><span class="toggle" onclick="this.classList.toggle('on')"><i></i></span></div>
+        <div class="divider"></div>
+        <div class="row slider-row"><div><div class="label">Position</div><div class="hint" style="margin-top:4px">Top left &nbsp;/&nbsp; Top right &nbsp;/&nbsp; Bottom left &nbsp;/&nbsp; Bottom right</div></div><div class="select">Top right</div></div>
+        <div class="divider"></div>
+        <div class="row"><div class="slider-row"><span class="label">Scale</span><span class="value">1.0×</span></div><input class="range" type="range" min="0.2" max="2.5" step="0.1" value="1.0"><div style="display:flex;justify-content:space-between;color:var(--muted);font-size:12px"><span>0.2×</span><span>2.5×</span></div></div>
+        <div class="divider"></div>
+        <div class="row slider-row"><div class="label">Color · RGBA</div><div class="color-chip"><span class="swatch" style="background:var(--cream)"></span> #FFFFC8 &nbsp;/&nbsp; 100% <span style="margin-left:auto;color:var(--dim)">∨</span></div></div>
+        <div class="row hint" style="line-height:1.5">Saved in chams.ini [CHAMS] as ShowFPS and FPSPosition.<br>Corner placement automatically adapts when the viewport is resized.</div>
+      </div>
+    </div>
+
+    <!-- 04 Glow & fill -->
+    <div class="card">
+      <div class="section-head" onclick="toggleCard(this)"><span class="chev">∨</span><div><div class="section-title">Glow & fill</div><div class="section-sub">Control body fill, clothing detail and visible / hidden colors.</div></div><span class="num">04</span></div>
+      <div class="card-body">
+        <div class="divider"></div>
+        <div class="row" style="display:flex;justify-content:space-between;align-items:center"><div class="label">Player highlight</div><span class="toggle on" onclick="this.classList.toggle('on')"><i></i></span></div>
+        <div class="row" style="padding-top:0">
+          <div class="label" style="font-size:13px;color:var(--dim);font-weight:500">Fill mode</div>
+          <div class="fill-grid">
+            <div class="fill-opt"><span class="dot2"></span> Solid colour</div>
+            <div class="fill-opt active"><span class="dot2"></span> Blend</div>
+            <div class="fill-opt"><span class="dot2"></span> Real clothes + light colour</div>
+            <div class="fill-opt"><span class="dot2"></span> Real clothes only</div>
+          </div>
+          <div class="hint">Blend preserves real clothes and layers colour over them.</div>
+        </div>
+        <div class="divider"></div>
+        <div class="row"><div class="slider-row"><span class="label">Glow strength</span><span class="value">0.65</span></div><input class="range" type="range" min="0.05" max="1" step="0.05" value="0.65"><div style="display:flex;justify-content:space-between;color:var(--muted);font-size:12px"><span>0.05</span><span>1.00</span></div></div>
+        <div class="divider"></div>
+        <div class="row color-row"><span class="label">Through walls · colour</span><div class="color-chip"><span class="swatch" style="background:var(--pink)"></span> #F09CAD <span style="margin-left:auto;color:var(--dim)">∨</span></div></div>
+        <div class="row color-row" style="padding-top:0"><span class="label">Open part · colour</span><div style="display:flex;gap:12px;align-items:center"><span class="toggle on" onclick="this.classList.toggle('on')"><i></i></span><div class="color-chip" style="width:218px"><span class="swatch" style="background:var(--mint)"></span> #94E8C1 <span style="margin-left:auto;color:var(--dim)">∨</span></div></div></div>
+      </div>
+    </div>
+
+    <!-- 05 2D stroke -->
+    <div class="card">
+      <div class="section-head" onclick="toggleCard(this)"><span class="chev">∨</span><div><div class="section-title">2D stroke</div><div class="section-sub">A clean screen-space outline around detected characters.</div></div><span class="num">05</span></div>
+      <div class="card-body">
+        <div class="divider"></div>
+        <div class="row" style="display:flex;justify-content:space-between"><div class="label">Stroke</div><span class="toggle on" onclick="this.classList.toggle('on')"><i></i></span></div>
+        <div class="divider"></div>
+        <div class="row"><div class="slider-row"><span class="label">Stroke size · open area</span><span class="value">2 px</span></div><input class="range" type="range" min="1" max="16" value="2"><div style="display:flex;justify-content:space-between;color:var(--muted);font-size:12px"><span>1 px</span><span>16 px</span></div></div>
+        <div class="row"><div class="slider-row"><span class="label">Stroke size · covered area</span><span class="value">3 px</span></div><input class="range" type="range" min="1" max="16" value="3"><div style="display:flex;justify-content:space-between;color:var(--muted);font-size:12px"><span>1 px</span><span>16 px</span></div></div>
+        <div class="row"><div class="slider-row"><span class="label">Stroke strength</span><span class="value">0.80</span></div><input class="range" type="range" min="0.05" max="1" step="0.05" value="0.80"><div style="display:flex;justify-content:space-between;color:var(--muted);font-size:12px"><span>0.05</span><span>1.00</span></div></div>
+        <div class="divider"></div>
+        <div class="row color-row"><span class="label">Open part · colour</span><div style="display:flex;gap:12px;align-items:center"><span class="toggle on" onclick="this.classList.toggle('on')"><i></i></span><div class="color-chip" style="width:218px"><span class="swatch" style="background:var(--mint)"></span> #94E8C1 <span style="margin-left:auto;color:var(--dim)">∨</span></div></div></div>
+        <div class="row color-row" style="padding-top:0"><span class="label">Through walls · colour</span><div class="color-chip" style="width:218px"><span class="swatch" style="background:var(--pink)"></span> #F09CAD <span style="margin-left:auto;color:var(--dim)">∨</span></div></div>
+      </div>
+    </div>
+
+    <!-- 06 3D wireframe -->
+    <div class="card">
+      <div class="section-head" onclick="toggleCard(this)"><span class="chev">∨</span><div><div class="section-title">3D wireframe</div><div class="section-sub">Trace character geometry with a fine, three-dimensional mesh.</div></div><span class="num">06</span></div>
+      <div class="card-body">
+        <div class="divider"></div>
+        <div class="row" style="display:flex;justify-content:space-between"><div class="label">3D wireframe stroke</div><span class="toggle" onclick="this.classList.toggle('on')"><i></i></span></div>
+        <div class="divider"></div>
+        <div class="row"><div class="slider-row"><span class="label">Wire size</span><span class="value">1 px</span></div><input class="range" type="range" min="1" max="8" value="1"><div style="display:flex;justify-content:space-between;color:var(--muted);font-size:12px"><span>1 px</span><span>8 px</span></div></div>
+        <div class="row"><div class="slider-row"><span class="label">Wire strength</span><span class="value">0.65</span></div><input class="range" type="range" min="0.05" max="1" step="0.05" value="0.65"><div style="display:flex;justify-content:space-between;color:var(--muted);font-size:12px"><span>0.05</span><span>1.00</span></div></div>
+        <div class="divider"></div>
+        <div class="row color-row"><span class="label">Wire through walls · colour</span><div class="color-chip"><span class="swatch" style="background:var(--pink)"></span> #F09CAD <span style="margin-left:auto;color:var(--dim)">∨</span></div></div>
+        <div class="row color-row" style="padding-top:0"><span class="label">Wire open part · colour</span><div style="display:flex;gap:12px;align-items:center"><span class="toggle on" onclick="this.classList.toggle('on')"><i></i></span><div class="color-chip" style="width:218px"><span class="swatch" style="background:var(--mint)"></span> #94E8C1 <span style="margin-left:auto;color:var(--dim)">∨</span></div></div></div>
+        <div class="row"><div class="protect"><div class="mint" style="font-weight:600">Wireframe is off</div><div class="hint" style="margin-top:4px">Enable 3D wireframe stroke to apply these settings.</div></div></div>
+      </div>
+    </div>
+
+    <!-- Logs -->
+    <div class="card">
+      <div class="section-head" onclick="toggleCard(this)"><span class="chev collapsed">∨</span><div class="section-title">Logs</div></div>
+      <div style="margin-left:auto;color:var(--dim);font-size:13px;padding-right:10px">0 records</div>
+      <div style="width:8px"></div>
+    </div>
+    <div class="card-body" style="display:none"></div>
+
+  </div>
+  <div class="footer-bar" style="justify-content:center;gap:6px"><span style="width:6px;height:6px;border-radius:3px;background:var(--mint);display:inline-block"></span><span style="color:var(--mint);font-weight:600;letter-spacing:0.06em;font-size:11px">hazu</span><span style="color:var(--dim)">@</span><span style="color:var(--text);font-weight:700;letter-spacing:0.08em;font-size:11px">alexainc</span></div>
+</div>
+<script>
+function toggleCard(h){
+  const chev=h.querySelector('.chev');
+  const body=h.nextElementSibling;
+  if(!body || !body.classList.contains('card-body')) return;
+  const isHide=body.style.display==='none';
+  body.style.display=isHide ? '' : 'none';
+  chev.classList.toggle('collapsed', !isHide);
+  // update CATEGORIES count
+  const expanded=document.querySelectorAll('.card .card-body:not([style*="none"])').length;
+  const cat=document.querySelector('.cats span:last-child');
+  if(cat) cat.textContent=expanded+' panels · '+(expanded===6?'expanded':'collapsed');
+}
+document.querySelectorAll('.fill-opt').forEach(el=>el.addEventListener('click',()=>{
+  el.parentElement.querySelectorAll('.fill-opt').forEach(o=>o.classList.remove('active'));
+  el.classList.add('active');
+}));
+</script>
+</body>
+</html>
