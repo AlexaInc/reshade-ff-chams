@@ -80,7 +80,7 @@ bool AlexaToggle(const char* id, bool* v, const char* labelLeft = nullptr) {
 	dl->AddRect(p0, p1, ImGui::ColorConvertFloat4ToU32(kBorder), r, 0, 1.0f);
 	float knobX = *v ? (p0.x + size.x - r - 2) : (p0.x + 2);
 	dl->AddCircleFilled(ImVec2(knobX + r, p0.y + r), r - 3, ImGui::ColorConvertFloat4ToU32(ImVec4(0.98f,0.98f,0.98f,1.f)), 16);
-	if (clicked) ImGui::MarkItemEdited();
+	if (clicked) 
 	return clicked;
 }
 
