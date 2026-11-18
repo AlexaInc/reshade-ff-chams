@@ -207,12 +207,12 @@ void reshade::runtime::draw_gui_chams(){
       // Dump mode row
       if(ImGui::Checkbox("Dump mode##dm",&s.dump)) chams::save();
       ImGui::SameLine(0,16); ImGui::TextDisabled("Write draw info to ReShade.log · 2,000 lines / activation");
-      ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("Copy dump path").x - 24,0);
+      ImGui::SameLine(ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize("Copy dump path").x - 24,0);
       if(ImGui::Button("Copy dump path##cdp")){ ImGui::OpenPopup("copied"); }
       if(ImGui::BeginPopup("copied")){ ImGui::TextDisabled("Copied"); ImGui::EndPopup(); }
       if(ImGui::Checkbox("Dump ALL draws##dad",&s.dump_all)) chams::save();
       ImGui::SameLine(0,16); ImGui::TextDisabled("Find missing pieces · 3,000 draws");
-      ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("Experimental diagnostics").x - 8,0);
+      ImGui::SameLine(ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize("Experimental diagnostics").x - 8,0);
       ImGui::TextDisabled("Experimental diagnostics");
       ImGui::EndChild(); ImGui::PopStyleVar(3); ImGui::PopStyleColor(1);
       ImGui::Dummy(ImVec2(0,7*k));
@@ -221,7 +221,7 @@ void reshade::runtime::draw_gui_chams(){
   // CATEGORIES bar
   {
     ImGui::TextColored(kMint,"CATEGORIES");
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("6 panels · expanded").x,0);
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize("6 panels · expanded").x,0);
     int expanded=0; for(auto &kv:g_open) if(kv.second) expanded++; // includes runtime but figma counts 6 panels (excluding master/runtime/logs?) Keep 6 label but update
     ImGui::TextDisabled("%d panels · expanded", expanded>6?6:expanded);
     ImGui::Dummy(ImVec2(0,4*Unit()));
@@ -230,7 +230,7 @@ void reshade::runtime::draw_gui_chams(){
   if(BeginFigmaSection("general","01","General","Choose how characters are detected and rendered.",nullptr)){
     // Render mode
     ImGui::Text("Render mode"); ImGui::TextDisabled("Per-draw passes, depth tested by the game. Safe default.");
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - 294,0);
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 294,0);
     ImGui::SetNextItemWidth(294);
     const char* rm_items[]={"Direct (recommended)","Overlay (experimental)"};
     // map: 1=Direct, 0=Overlay in settings
@@ -240,17 +240,17 @@ void reshade::runtime::draw_gui_chams(){
     ImGui::Text("Character detection mode");
     ImGui::TextDisabled("Wide checks 8 avatar-only uniforms for skins, cloth and hair.");
     ImGui::TextDisabled("Strict · original DLL rule    Skinned · bone matrices    All · mixed detection");
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - 294,0);
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 294,0);
     ImGui::SetNextItemWidth(294);
     if(ImGui::Combo("##detectmode",&s.detect_mode,"Strict\0Wide (default)\0Skinned\0All\0")) chams::save();
     Divider();
     // Toggles row style similar to HTML: flex space-between
     ImGui::Text("See enemies through walls"); ImGui::TextDisabled("Includes glue / ice walls. Off: only occluded parts are highlighted.");
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - 32,0); AlexaToggle("##through",&s.through_walls);
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 32,0); AlexaToggle("##through",&s.through_walls);
     if(!s.through_walls) { /* trigger save on toggle helper inside */ chams::save(); }
     Divider();
     ImGui::Text("Also paint hair / cloth shaders"); ImGui::TextDisabled("Wide match uses _BackLightDir instead of _CharaLightIntensity.");
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - 32,0); if(AlexaToggle("##wide",&s.wide_match)) chams::save();
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 32,0); if(AlexaToggle("##wide",&s.wide_match)) chams::save();
     ImGui::Dummy(ImVec2(0,6*Unit()));
     ImGui::TextDisabled("Overlay is experimental: separate mask buffer paints on top of the finished frame.");
     ImGui::TextColored(kMint,"Black screen? Switch to Direct, or toggle F8 off and on.");
@@ -259,9 +259,9 @@ void reshade::runtime::draw_gui_chams(){
   // 02 Third person
   if(BeginFigmaSection("third","02","Third person","Keep your own character clear without losing nearby enemies.",nullptr)){
     ImGui::Text("No chams on my own character"); ImGui::TextDisabled("Automatically excludes the closest draw with a stable distance of 2.4–2.6 m.");
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - 32,0); if(AlexaToggle("##hideown",&s.hide_own)) chams::save();
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 32,0); if(AlexaToggle("##hideown",&s.hide_own)) chams::save();
     Divider();
-    ImGui::Text("Safe cap for my character"); ImGui::SameLine(ImGui::GetContentRegionMax().x - 102,0);
+    ImGui::Text("Safe cap for my character"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 102,0);
     char buf[32]; snprintf(buf,sizeof(buf),"%.1f m",s.own_distance); ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,ImVec2(8,4)); ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,5*Unit());
     ImGui::PushStyleColor(ImGuiCol_FrameBg,kInner); ImGui::TextDisabled("%s",buf); // mimic badge
     ImGui::PopStyleColor(1); ImGui::PopStyleVar(2);
@@ -282,22 +282,22 @@ void reshade::runtime::draw_gui_chams(){
   if(BeginFigmaSection("fps","03","FPS counter","A lightweight performance overlay, positioned your way.",nullptr)){
     ImGui::Text("Show FPS counter"); ImGui::TextDisabled("Off by default. Uses the existing overlay GL guard to prevent flicker.");
     bool fpsOn = (_show_fps!=0);
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - 32,0);
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 32,0);
     if(AlexaToggle("##fpsshow",&fpsOn)){ _show_fps=fpsOn?1:0; save_config(); }
     Divider();
     ImGui::Text("Position"); ImGui::TextDisabled("Top left  /  Top right  /  Bottom left  /  Bottom right");
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - 294,0);
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 294,0);
     ImGui::SetNextItemWidth(294);
     int pos=(int)_fps_pos; const char* pos_items="Top left\0Top right\0Bottom left\0Bottom right\0";
     if(ImGui::Combo("##fpspos",&pos,pos_items)) { _fps_pos=pos; save_config(); }
     Divider();
-    ImGui::Text("Scale"); ImGui::SameLine(ImGui::GetContentRegionMax().x - 102,0); { char b[16]; snprintf(b,sizeof(b),"%.1fx",_fps_scale); ImGui::TextDisabled("%s",b); }
+    ImGui::Text("Scale"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 102,0); { char b[16]; snprintf(b,sizeof(b),"%.1fx",_fps_scale); ImGui::TextDisabled("%s",b); }
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
     if(ImGui::SliderFloat("##fpsscale",&_fps_scale,0.2f,2.5f,"")) save_config();
     { float w=ImGui::GetContentRegionAvail().x; ImGui::TextDisabled("0.2×"); ImGui::SameLine(w - ImGui::CalcTextSize("2.5×").x,0); ImGui::TextDisabled("2.5×"); }
     Divider();
     ImGui::Text("Color · RGBA");
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - 294,0);
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 294,0);
     // color dropdown mimic: show swatch + hex + alpha
     {
       ImGui::PushStyleColor(ImGuiCol_FrameBg,kInner); ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,5*Unit());
@@ -339,14 +339,14 @@ void reshade::runtime::draw_gui_chams(){
     else if(s.glow_mode==0) ImGui::TextDisabled("Whole body filled with solid colour — classic chams.");
     else ImGui::TextDisabled("Real clothes drawn through walls — best for outfit visibility.");
     Divider();
-    ImGui::Text("Glow strength"); ImGui::SameLine(ImGui::GetContentRegionMax().x - 102,0); { char b[16]; snprintf(b,sizeof(b),"%.2f",s.glow_alpha); ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,5*Unit()); ImGui::PushStyleColor(ImGuiCol_FrameBg,kInner); ImGui::Button(b,ImVec2(102,28)); ImGui::PopStyleColor(1); ImGui::PopStyleVar(1); }
+    ImGui::Text("Glow strength"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 102,0); { char b[16]; snprintf(b,sizeof(b),"%.2f",s.glow_alpha); ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,5*Unit()); ImGui::PushStyleColor(ImGuiCol_FrameBg,kInner); ImGui::Button(b,ImVec2(102,28)); ImGui::PopStyleColor(1); ImGui::PopStyleVar(1); }
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
     if(ImGui::SliderFloat("##glowalpha",&s.glow_alpha,0.05f,1.f,"")) chams::save();
     { float w=ImGui::GetContentRegionAvail().x; ImGui::TextDisabled("0.05"); ImGui::SameLine(w - ImGui::CalcTextSize("1.00").x,0); ImGui::TextDisabled("1.00"); }
     Divider();
     // Through walls colour dropdown
     ImGui::Text("Through walls · colour");
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - 294,0);
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 294,0);
     {
       ImVec2 cur2=ImGui::GetCursorScreenPos(); float cw=294; ImDrawList* dl2=ImGui::GetWindowDrawList();
       dl2->AddRectFilled(cur2,ImVec2(cur2.x+cw,cur2.y+32),Col(kInner),5);
@@ -361,7 +361,7 @@ void reshade::runtime::draw_gui_chams(){
     }
     // Open part
     ImGui::Text("Open part · colour");
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - 294 - 48,0);
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 294 - 48,0);
     AlexaToggle("##glowopen",&s.glow_open);
     ImGui::SameLine(0,12);
     {
@@ -382,20 +382,20 @@ void reshade::runtime::draw_gui_chams(){
   if(BeginFigmaSection("stroke","05","2D stroke","A clean screen-space outline around detected characters.",&s.stroke)){
     // already toggled via header
     // Stroke size open
-    ImGui::Text("Stroke size · open area"); ImGui::SameLine(ImGui::GetContentRegionMax().x - 102,0); { char b[16]; snprintf(b,sizeof(b),"%d px",s.stroke_open_size); ImGui::Button(b,ImVec2(102,28)); }
+    ImGui::Text("Stroke size · open area"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 102,0); { char b[16]; snprintf(b,sizeof(b),"%d px",s.stroke_open_size); ImGui::Button(b,ImVec2(102,28)); }
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
     if(ImGui::SliderInt("##stopen",&s.stroke_open_size,1,16)) chams::save();
     { float w=ImGui::GetContentRegionAvail().x; ImGui::TextDisabled("1 px"); ImGui::SameLine(w - ImGui::CalcTextSize("16 px").x,0); ImGui::TextDisabled("16 px"); }
-    ImGui::Text("Stroke size · covered area"); ImGui::SameLine(ImGui::GetContentRegionMax().x - 102,0); { char b2[16]; snprintf(b2,sizeof(b2),"%d px",s.stroke_through_size); ImGui::Button(b2,ImVec2(102,28)); }
+    ImGui::Text("Stroke size · covered area"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 102,0); { char b2[16]; snprintf(b2,sizeof(b2),"%d px",s.stroke_through_size); ImGui::Button(b2,ImVec2(102,28)); }
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
     if(ImGui::SliderInt("##stthrough",&s.stroke_through_size,1,16)) chams::save();
     { float w=ImGui::GetContentRegionAvail().x; ImGui::TextDisabled("1 px"); ImGui::SameLine(w - ImGui::CalcTextSize("16 px").x,0); ImGui::TextDisabled("16 px"); }
-    ImGui::Text("Stroke strength"); ImGui::SameLine(ImGui::GetContentRegionMax().x - 102,0); { char b[16]; snprintf(b,sizeof(b),"%.2f",s.stroke_alpha); ImGui::Button(b,ImVec2(102,28)); }
+    ImGui::Text("Stroke strength"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 102,0); { char b[16]; snprintf(b,sizeof(b),"%.2f",s.stroke_alpha); ImGui::Button(b,ImVec2(102,28)); }
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
     if(ImGui::SliderFloat("##stalpha",&s.stroke_alpha,0.05f,1.f,"")) chams::save();
     { float w=ImGui::GetContentRegionAvail().x; ImGui::TextDisabled("0.05"); ImGui::SameLine(w - ImGui::CalcTextSize("1.00").x,0); ImGui::TextDisabled("1.00"); }
     Divider();
-    ImGui::Text("Open part · colour"); ImGui::SameLine(ImGui::GetContentRegionMax().x - 294 - 48,0); AlexaToggle("##stopen_t",&s.stroke_open);
+    ImGui::Text("Open part · colour"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 294 - 48,0); AlexaToggle("##stopen_t",&s.stroke_open);
     ImGui::SameLine(0,12);
     {
       ImVec2 cur2=ImGui::GetCursorScreenPos(); float cw=218; ImDrawList* dl2=ImGui::GetWindowDrawList();
@@ -410,7 +410,7 @@ void reshade::runtime::draw_gui_chams(){
       if(ImGui::BeginPopup("stopenpick")){ if(ImGui::ColorEdit3("##stopen",s.stroke_open_color,ImGuiColorEditFlags_NoInputs)) chams::save(); ImGui::EndPopup(); }
     }
     ImGui::Text("Through walls · colour");
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - 218,0);
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 218,0);
     {
       ImVec2 cur2=ImGui::GetCursorScreenPos(); float cw=218; ImDrawList* dl2=ImGui::GetWindowDrawList();
       dl2->AddRectFilled(cur2,ImVec2(cur2.x+cw,cur2.y+32),Col(kInner),5);
@@ -428,19 +428,19 @@ void reshade::runtime::draw_gui_chams(){
   // 06 3D wireframe
   if(BeginFigmaSection("wire","06","3D wireframe","Trace character geometry with a fine, three-dimensional mesh.",nullptr)){
     // header toggle separate row inside
-    ImGui::Text("3D wireframe stroke"); ImGui::SameLine(ImGui::GetContentRegionMax().x - 32,0); if(AlexaToggle("##wire",&s.wire)) chams::save();
+    ImGui::Text("3D wireframe stroke"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 32,0); if(AlexaToggle("##wire",&s.wire)) chams::save();
     Divider();
-    ImGui::Text("Wire size"); ImGui::SameLine(ImGui::GetContentRegionMax().x - 102,0); { char b[16]; snprintf(b,sizeof(b),"%d px",s.wire_size); ImGui::Button(b,ImVec2(102,28)); }
+    ImGui::Text("Wire size"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 102,0); { char b[16]; snprintf(b,sizeof(b),"%d px",s.wire_size); ImGui::Button(b,ImVec2(102,28)); }
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
     if(ImGui::SliderInt("##wsize",&s.wire_size,1,8)) chams::save();
     { float w=ImGui::GetContentRegionAvail().x; ImGui::TextDisabled("1 px"); ImGui::SameLine(w - ImGui::CalcTextSize("8 px").x,0); ImGui::TextDisabled("8 px"); }
-    ImGui::Text("Wire strength"); ImGui::SameLine(ImGui::GetContentRegionMax().x - 102,0); { char b2[16]; snprintf(b2,sizeof(b2),"%.2f",s.wire_alpha); ImGui::Button(b2,ImVec2(102,28)); }
+    ImGui::Text("Wire strength"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 102,0); { char b2[16]; snprintf(b2,sizeof(b2),"%.2f",s.wire_alpha); ImGui::Button(b2,ImVec2(102,28)); }
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
     if(ImGui::SliderFloat("##walpha",&s.wire_alpha,0.05f,1.f,"")) chams::save();
     { float w=ImGui::GetContentRegionAvail().x; ImGui::TextDisabled("0.05"); ImGui::SameLine(w - ImGui::CalcTextSize("1.00").x,0); ImGui::TextDisabled("1.00"); }
     Divider();
     ImGui::Text("Wire through walls · colour");
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - 294,0);
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 294,0);
     {
       ImVec2 cur2=ImGui::GetCursorScreenPos(); float cw=294; ImDrawList* dl2=ImGui::GetWindowDrawList();
       dl2->AddRectFilled(cur2,ImVec2(cur2.x+cw,cur2.y+32),Col(kInner),5);
@@ -453,7 +453,7 @@ void reshade::runtime::draw_gui_chams(){
       if(ImGui::IsItemClicked()) ImGui::OpenPopup("wirethroughpick");
       if(ImGui::BeginPopup("wirethroughpick")){ if(ImGui::ColorEdit3("##wirethrough",s.wire_through_color,ImGuiColorEditFlags_NoInputs)) chams::save(); ImGui::EndPopup(); }
     }
-    ImGui::Text("Wire open part · colour"); ImGui::SameLine(ImGui::GetContentRegionMax().x - 294 - 48,0); AlexaToggle("##wireopen",&s.wire_open);
+    ImGui::Text("Wire open part · colour"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 294 - 48,0); AlexaToggle("##wireopen",&s.wire_open);
     ImGui::SameLine(0,12);
     {
       ImVec2 cur2=ImGui::GetCursorScreenPos(); float cw=218; ImDrawList* dl2=ImGui::GetWindowDrawList();
