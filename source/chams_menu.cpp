@@ -862,8 +862,10 @@ void reshade::runtime::draw_gui_chams(){
     ColorRow("Visible · colour","radardot",s.radar_dot_colour,true);
     ColorRow("Behind a wall · colour","radarwall",s.radar_wall_colour,true);
     ColorRow("Frame · colour","radarframe",s.radar_frame_colour,true);
+    ColorRow("Background · colour","radarbg",s.radar_bg_colour,true);
     Divider();
-    { char buf[128]; snprintf(buf,sizeof(buf),"%u player%s on the radar",chams::radar_marks_now(),chams::radar_marks_now()==1?"":"s"); InfoStrip("Live",buf); }
+    { char buf[128]; snprintf(buf,sizeof(buf),"%u player%s on the radar",chams::radar_marks_now(),chams::radar_marks_now()==1?"":"s");
+      InfoStrip("Live",buf); }
     EndFigmaSection();
   }
 

@@ -338,6 +338,7 @@ namespace reshade::chams
 		config.get("RADAR", "DotColour",         g_settings.radar_dot_colour);
 		config.get("RADAR", "WallColour",        g_settings.radar_wall_colour);
 		config.get("RADAR", "FrameColour",       g_settings.radar_frame_colour);
+		config.get("RADAR", "BgColour",          g_settings.radar_bg_colour);
 
 		config.get("CHAMS", "ShowFPS",            g_settings.show_fps);
 		{
@@ -417,6 +418,7 @@ namespace reshade::chams
 		config.set("RADAR", "DotColour",         g_settings.radar_dot_colour);
 		config.set("RADAR", "WallColour",        g_settings.radar_wall_colour);
 		config.set("RADAR", "FrameColour",       g_settings.radar_frame_colour);
+		config.set("RADAR", "BgColour",          g_settings.radar_bg_colour);
 
 		config.set("CHAMS", "ShowFPS",            g_settings.show_fps);
 		config.set("CHAMS", "FPSPosition",        fps_position_to_string(g_settings.fps_position));

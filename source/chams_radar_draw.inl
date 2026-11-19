@@ -2,13 +2,17 @@
  * chams_radar_draw.inl -- draws the player-centred radar square.
  * created by hazu@alexainc
  *
- * Included from chams_gl.inl AFTER chams_overlay.inl, because it needs
- * overlay_gpu / ov() / overlay_state_guard. Runs in the same wglSwapBuffers
- * window as the mask composite, on the game's final image.
+ * Included from chams_gl.inl AFTER chams_overlay.inl. Runs in the same
+ * wglSwapBuffers window as the mask composite, on the game's final image.
  *
- * Everything is drawn with the overlay program's fullscreen quad: the square
- * frame, the centre ring (the player), one dot per detected character and a
- * direction tick. No shader of its own, no text, no buffers.
+ * OWN GL PROGRAM (stage 111)
+ * --------------------------
+ * This used to reuse the mask-composite program from chams_overlay.inl, which is
+ * only built in Overlay render mode. In Direct mode (the default) that program
+ * does not exist, so the radar drew nothing at all -- the "always 0 players,
+ * nothing on screen" report. It now owns a tiny GL 3.0 program and a quad buffer,
+ * built once per context on first use, so it is independent of the renderer mode
+ * and of the mask pipeline.
  */
 #pragma once
 
@@ -16,6 +20,111 @@ namespace chams_radar
 {
 	// One screen-space quad, in pixels, from the GL viewport's top left corner.
 	struct px_quad { float x0, y0, x1, y1; };
+
+	struct radar_gpu
+	{
+		GLuint program = 0, vao = 0, vbo = 0;
+		GLint  loc_rect = -1, loc_colour = -1;
+		bool   tried = false, ready = false;
+	};
+	inline std::unordered_map<void *, radar_gpu> &gpu_map()
+	{
+		static std::unordered_map<void *, radar_gpu> m;
+		return m;
+	}
+	inline std::mutex &gpu_mutex()
+	{
+		static std::mutex m;
+		return m;
+	}
+	inline void *gpu_key()
+	{
+		return reinterpret_cast<void *>(static_cast<uintptr_t>(
+			wglGetCurrentContext() != nullptr ? reinterpret_cast<uintptr_t>(wglGetCurrentContext()) : 0u));
+	}
+	inline radar_gpu &gpu()
+	{
+		void *k = gpu_key();
+		std::lock_guard<std::mutex> lock(gpu_mutex());
+		return gpu_map()[k];
+	}
+
+	static const char *const k_radar_vs = R"(#version 130
+in vec2 a_pos;            // unit quad 0..1
+uniform vec4 u_rect;      // xy = top left in NDC, zw = size in NDC
+void main()
+{
+	vec2 p = u_rect.xy + a_pos * u_rect.zw;
+	gl_Position = vec4(p, 0.0, 1.0);
+}
+)";
+	static const char *const k_radar_fs = R"(#version 130
+uniform vec4 u_colour;
+out vec4 o_colour;
+void main() { o_colour = u_colour; }
+)";
+
+	inline bool build()
+	{
+		radar_gpu &g = gpu();
+		if (g.ready)
+			return true;
+		if (g.tried)
+			return false;
+		g.tried = true;
+		if (gl.CreateShader == nullptr || gl.CreateProgram == nullptr || gl.DrawArrays == nullptr)
+			return false;
+
+		const auto compile = [](GLenum type, const char *src) -> GLuint {
+			const GLuint s = gl.CreateShader(type);
+			gl.ShaderSource(s, 1, &src, nullptr);
+			gl.CompileShader(s);
+			GLint ok = 0;
+			gl.GetShaderiv(s, GL_COMPILE_STATUS, &ok);
+			if (!ok) {
+				char log[512] = {};
+				gl.GetShaderInfoLog(s, sizeof(log), nullptr, log);
+				reshade::log::message(reshade::log::level::error, "[CHAMS] radar shader failed: %s", log);
+				gl.DeleteShader(s);
+				return 0;
+			}
+			return s;
+		};
+		const GLuint vs = compile(GL_VERTEX_SHADER, k_radar_vs);
+		const GLuint fs = compile(GL_FRAGMENT_SHADER, k_radar_fs);
+		if (vs == 0 || fs == 0)
+			return false;
+
+		g.program = gl.CreateProgram();
+		gl.AttachShader(g.program, vs);
+		gl.AttachShader(g.program, fs);
+		gl.BindAttribLocation(g.program, 0, "a_pos");
+		gl.LinkProgram(g.program);
+		gl.DeleteShader(vs);
+		gl.DeleteShader(fs);
+		GLint linked = 0;
+		gl.GetProgramiv(g.program, GL_LINK_STATUS, &linked);
+		if (!linked) {
+			reshade::log::message(reshade::log::level::error, "[CHAMS] radar program failed to link");
+			gl.DeleteProgram(g.program);
+			g.program = 0;
+			return false;
+		}
+		g.loc_rect = gl.GetUniformLocation(g.program, "u_rect");
+		g.loc_colour = gl.GetUniformLocation(g.program, "u_colour");
+
+		const GLfloat verts[8] = { 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f };
+		gl.GenVertexArrays(1, &g.vao);
+		gl.BindVertexArray(g.vao);
+		gl.GenBuffers(1, &g.vbo);
+		gl.BindBuffer(GL_ARRAY_BUFFER, g.vbo);
+		gl.BufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+		gl.EnableVertexAttribArray(0);
+		gl.VertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+		gl.BindVertexArray(0);
+		g.ready = true;
+		return true;
+	}
 
 	inline void push_quad(std::vector<px_quad> &out, float cx, float cy, float hw, float hh)
 	{
@@ -26,10 +135,10 @@ namespace chams_radar
 	inline void push_frame(std::vector<px_quad> &out, float x, float y, float size, float thickness)
 	{
 		const float h = thickness * 0.5f;
-		out.push_back({ x - h, y - h, x + size + h, y + h });                 // top
-		out.push_back({ x - h, y + size - h, x + size + h, y + size + h });   // bottom
-		out.push_back({ x - h, y - h, x + h, y + size + h });                 // left
-		out.push_back({ x + size - h, y - h, x + size + h, y + size + h });   // right
+		out.push_back({ x - h, y - h, x + size + h, y + h });
+		out.push_back({ x - h, y + size - h, x + size + h, y + size + h });
+		out.push_back({ x - h, y - h, x + h, y + size + h });
+		out.push_back({ x + size - h, y - h, x + size + h, y + size + h });
 	}
 
 	// A ring of small quads: the "you are here" marker at the centre.
@@ -42,8 +151,7 @@ namespace chams_radar
 		}
 	}
 
-	// Dots for every detected character, in radar pixels. Player centred: the
-	// centre of the square is the player, everything else is relative.
+	// Dots for every detected character, in radar pixels. Player centred.
 	inline void build_marks(std::vector<px_quad> &out, const state_t &s, float view_h,
 		bool through_colour_pass, bool track)
 	{
@@ -53,7 +161,7 @@ namespace chams_radar
 				continue;
 			float p[2];
 			if (!project(s, m.world, p))
-				continue;                        // outside the square
+				continue;
 			const float fade = m.age == 0 ? 1.0f
 				: std::max(0.0f, 1.0f - static_cast<float>(m.age) / 90.0f);
 			if (fade <= 0.01f)
@@ -70,14 +178,13 @@ namespace chams_radar
 	}
 
 	inline void draw_px_quads(std::vector<px_quad> &quads, const float colour[4],
-		float view_w, float view_h, bool additive)
+		float view_w, float view_h)
 	{
-		if (quads.empty() || gl.UseProgram == nullptr || gl.DrawArrays == nullptr)
+		if (quads.empty() || !build())
 			return;
-		overlay_gpu &g = ov();
-		if (!g.ready || g.program == 0)
-			return;
+		radar_gpu &g = gpu();
 
+		// preserve the application's state, exactly like the mask composite does
 		overlay_state_guard guard;
 		GLint vp[4] = { 0, 0, 0, 0 };
 		gl.GetIntegerv(GL_VIEWPORT, vp);
@@ -95,24 +202,20 @@ namespace chams_radar
 		gl.Disable(GL_SCISSOR_TEST);
 		gl.Enable(GL_BLEND);
 		gl.BlendEquation(GL_FUNC_ADD);
-		if (additive)
-			gl.BlendFunc(GL_ONE, GL_ONE);
-		else
-			gl.BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+		gl.BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 		gl.ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 		gl.DepthMask(GL_FALSE);
-
 		if (g.loc_colour >= 0)
 			gl.Uniform4f(g.loc_colour, colour[0], colour[1], colour[2], colour[3]);
+
 		for (const px_quad &q : quads) {
-			if (g.loc_offset < 0)
+			if (g.loc_rect < 0)
 				break;
 			const float nx0 = (q.x0 - vx) / vw * 2.0f - 1.0f;
 			const float nx1 = (q.x1 - vx) / vw * 2.0f - 1.0f;
 			const float ny0 = 1.0f - (q.y1 - vy) / vh * 2.0f;
 			const float ny1 = 1.0f - (q.y0 - vy) / vh * 2.0f;
-			gl.Uniform4f(g.loc_offset, (nx1 - nx0) * 0.5f, (ny1 - ny0) * 0.5f,
-				(nx0 + nx1) * 0.5f, (ny0 + ny1) * 0.5f);
+			gl.Uniform4f(g.loc_rect, nx0, ny0, nx1 - nx0, ny1 - ny0);
 			gl.DrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 		}
 	}
@@ -131,11 +234,18 @@ namespace chams_radar
 
 		std::vector<px_quad> quads;
 
-		// frame + centre ring, in the "plate" colour
+		// background plate, so the square reads on any scene
+		if (g_settings.radar_bg_colour[3] > 0.01f) {
+			quads.clear();
+			quads.push_back({ s.x, s.y, s.x + s.size, s.y + s.size });
+			draw_px_quads(quads, g_settings.radar_bg_colour, vw, vh);
+		}
+
+		// frame + centre ring
 		quads.clear();
 		push_frame(quads, s.x, s.y, s.size, std::max(1.0f, 1.4f * k));
 		push_ring(quads, s.x + s.size * 0.5f, s.y + s.size * 0.5f, 5.0f * k, 1.5f * k, 16);
-		draw_px_quads(quads, g_settings.radar_frame_colour, vw, vh, false);
+		draw_px_quads(quads, g_settings.radar_frame_colour, vw, vh);
 
 		if (!marks)
 			return;
@@ -143,7 +253,7 @@ namespace chams_radar
 			quads.clear();
 			build_marks(quads, s, vh, pass == 1, track);
 			const float *col = pass == 1 ? g_settings.radar_wall_colour : g_settings.radar_dot_colour;
-			draw_px_quads(quads, col, vw, vh, false);
+			draw_px_quads(quads, col, vw, vh);
 		}
 	}
 }

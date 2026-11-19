@@ -565,10 +565,12 @@ void main()
 				comp_gl_error().load(std::memory_order_relaxed),
 				diag_thread_id(), dkey, diag_hdc(), dfound ? 1 : 0, dfound ? dkey : nullptr);
 		}
-		// ---- radar (stage 110) -----------------------------------------------
+		// ---- radar (stage 111) -----------------------------------------------
 		// Collected character positions become this frame snapshot, then the radar
-		// square and its marks are drawn on the finished image. Before the
-		// composite gates below, so the radar never depends on the mask renderer.
+		// square and its marks are drawn on the finished image. It runs before the
+		// composite gates below and uses its OWN GL program, so it does not depend
+		// on the mask renderer (which only exists in Overlay render mode) and it
+		// keeps drawing while the ReShade menu is open.
 		if (g_settings.radar_marks) {
 			chams_radar::frame_commit(g_settings.radar_area_m, g_settings.radar_yaw);
 			g_radar_bodies.store(chams_radar::state().bodies.load(), std::memory_order_relaxed);
