@@ -472,7 +472,7 @@ bool BeginFigmaSection(const char* id,const char* num,const char* title,const ch
     ImGui::SetCursorScreenPos(ImVec2(togx-6*k,togy-6*k));
     togPressed=ImGui::InvisibleButton("##toghit",ImVec2(togw+12*k,18*k+12*k));
     togHovered=ImGui::IsItemHovered();
-    if(togPressed){ *tog=!*tog; chams::save(); }
+    if(togPressed){ *tog=!*tog; reshade::chams::save(); }
     ImGui::PopID();
   }
   float labelW=std::max(1.f, (tog?togx-6*k:cur.x+w)-cur.x);
