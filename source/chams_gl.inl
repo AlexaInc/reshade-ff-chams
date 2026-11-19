@@ -2260,7 +2260,9 @@ namespace reshade::chams
 						read_matrices(*rinfo);
 						float rcam[3] = { 0.0f, 0.0f, 0.0f };
 						camera_of(*rinfo, rcam);
-						chams_radar::note_camera(rcam);
+						// pass the view matrix so the radar can take the camera's facing
+						// from it and rotate with the player's view (stage 114)
+						chams_radar::note_camera(rcam, rinfo->view.valid() ? rinfo->view_m : nullptr);
 						if (rinfo->obj_to_world.valid()) {
 							const float wp[2] = { rinfo->world[12], rinfo->world[14] };
 							chams_radar::note_character(wp, false);

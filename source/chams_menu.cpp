@@ -854,13 +854,19 @@ void reshade::runtime::draw_gui_chams(){
     { char buf[96]; float ppm=s.radar_square_px/std::max(1.f,s.radar_area_m);
       snprintf(buf,sizeof(buf),"%.2f px per metre",ppm); InfoStrip("Scale",buf); }
     Divider();
+    SubLabel("Orientation");
+    Label1("Turn with my view"); ToggleRight("##radarrotate",&s.radar_rotate_with_camera);
+    WrapText(kMuted,"On: up on the radar is always where you are looking, so turning the camera turns the square. The facing is read from the game's view matrix. Off: the square stays world aligned, north up.",ImGui::GetContentRegionAvail().x);
+    SliderRowF("Extra rotation","##radaryaw",&s.radar_yaw,-3.15f,3.15f,"%.2f rad","");
+    WrapText(kMuted,"Added on top of the camera facing. Leave at 0 unless the square reads rotated for you.",ImGui::GetContentRegionAvail().x);
+    Divider();
     SubLabel("Marks");
     Label1("Movement direction"); ToggleRight("##radartrack",&s.radar_track);
     WrapText(kMuted,"A short tick points the way a player is moving, from their last two positions.",ImGui::GetContentRegionAvail().x);
-    SliderRowF("Rotation","##radaryaw",&s.radar_yaw,-3.15f,3.15f,"%.2f rad","");
-    WrapText(kMuted,"Rotates the radar around you. Leave at 0 for world aligned, or match it to how you read the game.",ImGui::GetContentRegionAvail().x);
-    ColorRow("Visible · colour","radardot",s.radar_dot_colour,true);
-    ColorRow("Behind a wall · colour","radarwall",s.radar_wall_colour,true);
+    ColorRow("On screen · colour","radardot",s.radar_dot_colour,true);
+    WrapText(kMuted,"Filled square: the game is drawing that body right now, so it is in front of you.",ImGui::GetContentRegionAvail().x);
+    ColorRow("Behind / off camera · colour","radarwall",s.radar_wall_colour,true);
+    WrapText(kMuted,"Hollow square: not currently drawn by the game, so behind you, beside you, or behind a wall. Held for about four seconds after it was last seen.",ImGui::GetContentRegionAvail().x);
     ColorRow("Frame · colour","radarframe",s.radar_frame_colour,true);
     ColorRow("Background · colour","radarbg",s.radar_bg_colour,true);
     Divider();

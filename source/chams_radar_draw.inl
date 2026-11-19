@@ -133,6 +133,11 @@ namespace chams_radar
 	}
 
 	// Every detected character, in radar pixels. The player is the centre.
+	//
+	// A mark the game is currently drawing (age 0) is a filled square in the dot
+	// colour. A mark that has stopped being drawn -- behind or beside the camera,
+	// culled by the game -- is a hollow square in the wall colour. Both are on the
+	// radar; the difference is stated on screen rather than hidden.
 	inline void draw_marks(const GLint clip[4], const state_t &s, float vh, bool track)
 	{
 		const float k = std::max(1.0f, vh / 1080.0f);
@@ -141,21 +146,41 @@ namespace chams_radar
 			if (!project(s, m.world, p))
 				continue;
 			const float half = 2.5f * k;
-			const float *col = m.through_wall ? g_settings.radar_wall_colour
-			                                  : g_settings.radar_dot_colour;
-			draw_rect(clip, p[0] - half, p[1] - half, p[0] + half, p[1] + half, col, vh);
+			const bool invisible = (m.age > 0) || m.through_wall;
+			const float *col = invisible ? g_settings.radar_wall_colour
+			                             : g_settings.radar_dot_colour;
+			if (!invisible) {
+				draw_rect(clip, p[0] - half, p[1] - half, p[0] + half, p[1] + half, col, vh);
+			} else {
+				// hollow: four 1 px edges, so "not currently drawn" is obvious
+				const float t = std::max(1.0f, k);
+				draw_rect(clip, p[0] - half, p[1] - half, p[0] + half, p[1] - half + t, col, vh);
+				draw_rect(clip, p[0] - half, p[1] + half - t, p[0] + half, p[1] + half, col, vh);
+				draw_rect(clip, p[0] - half, p[1] - half, p[0] - half + t, p[1] + half, col, vh);
+				draw_rect(clip, p[0] + half - t, p[1] - half, p[0] + half, p[1] + half, col, vh);
+			}
 
 			if (!track)
 				continue;
 			const float yaw = movement_yaw(m, s.yaw);
 			if (yaw == 0.0f)
 				continue;
-			// a 3 px tick one dot-length in front of the mark
 			const float len = 8.0f * k;
 			const float tx = p[0] + std::sin(yaw) * len;
 			const float ty = p[1] - std::cos(yaw) * len;
 			draw_rect(clip, tx - 1.5f * k, ty - 1.5f * k, tx + 1.5f * k, ty + 1.5f * k, col, vh);
 		}
+	}
+
+	// A short tick at the top edge marking where the camera is looking, so the
+	// square reads as "me at the centre, up is where I face".
+	inline void draw_heading(const GLint clip[4], float x, float y, float size, float thickness,
+		const float colour[4], float vh)
+	{
+		const float t = std::max(1.0f, thickness);
+		const float cx = x + size * 0.5f;
+		const float span = size * 0.10f;
+		draw_rect(clip, cx - t, y, cx + t, y + span, colour, vh);
 	}
 
 	// Draw entry point, called from render_overlay() once per frame.
@@ -195,6 +220,7 @@ namespace chams_radar
 		gl.Clear(GL_COLOR_BUFFER_BIT);   // the plate, now that we are clipped to it
 
 		draw_frame(clip, x, y, size, 1.5f * k, g_settings.radar_frame_colour, vh);
+		draw_heading(clip, x, y, size, 1.5f * k, g_settings.radar_frame_colour, vh);
 		draw_centre(clip, x + size * 0.5f, y + size * 0.5f, 5.0f * k, 1.5f * k,
 			g_settings.radar_frame_colour, vh);
 		if (marks)
@@ -206,9 +232,12 @@ namespace chams_radar
 		if (now_frame - last_log > 600) {
 			last_log = now_frame;
 			reshade::log::message(reshade::log::level::info,
-				"[RADAR] drawn=%u shown=%zu square=%.0f,%.0f size=%.0f viewport=%.0fx%.0f scissor_was=%d",
+				"[RADAR] drawn=%u shown=%zu square=%.0f,%.0f size=%.0f viewport=%.0fx%.0f scissor_was=%d "
+				"rotate=%s cam_yaw=%.2f cam_yaw_valid=%d px_per_m=%.2f",
 				s.bodies.load(std::memory_order_relaxed), s.shown.size(), x, y, size, vw, vh,
-				guard.scissor_enabled == GL_TRUE ? 1 : 0);
+				guard.scissor_enabled == GL_TRUE ? 1 : 0,
+				g_settings.radar_rotate_with_camera ? "camera" : "manual",
+				s.cam_yaw, s.cam_yaw_valid ? 1 : 0, px_per_m(s));
 		}
 		// guard destructor restores scissor enable + box + clear colour + colour mask
 	}

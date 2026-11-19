@@ -166,6 +166,7 @@ namespace reshade::chams
 		float radar_dot_colour[4]     = { 0.24f, 0.91f, 0.75f, 0.95f };
 		float radar_wall_colour[4]    = { 1.00f, 0.36f, 0.30f, 0.95f };
 		float radar_frame_colour[4]   = { 0.85f, 0.90f, 0.95f, 0.55f };
+		bool  radar_rotate_with_camera = true;   // square turns with the view (stage 114)
 		float radar_bg_colour[4]      = { 0.03f, 0.05f, 0.07f, 0.00f };  // plate under the marks (opt-in)
 		int   fps_position            = 0;      // 0 TopLeft 1 TopRight 2 BottomLeft 3 BottomRight default TopLeft
 		float fps_scale               = 1.0f;   // text scale (reuses runtime scale range)
