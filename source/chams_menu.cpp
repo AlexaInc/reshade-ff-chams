@@ -569,47 +569,74 @@ void reshade::runtime::draw_gui_chams(){
   }
 
   // ================= RUNTIME CAPTURE =================
+  // Click handling (stage 106):
+  //   The collapse hit box is an InvisibleButton over the whole header, so any
+  //   button placed on top of it lost the click to the header (that is why
+  //   "Start tracking" never reacted). The header is now split into TWO hit
+  //   areas that never overlap:
+  //     - a narrow chevron zone on the left (this toggles the panel)
+  //     - the rest of the header (title + badge), which does nothing
+  //   The action buttons are drawn to the right of the title, outside both
+  //   zones, so their clicks always reach them. Their label is static
+  //   ("Start tracking" / "Add marker"); the tracking state is shown in the
+  //   body, so the button can never appear to change into a collapse control.
   {
+    static bool s_tracking = false;
     bool &open=g_open["runtime"];
     float k=Unit(); float w=ImGui::GetContentRegionAvail().x;
     ImVec2 cur=ImGui::GetCursorScreenPos(); float r=Rounding();
     float pad=12*k; float th=ImGui::GetTextLineHeight();
     float btnH=26*k;
-    float bw1=TextW("Stop tracking")+30*k, bw2=TextW("Add marker")+30*k;
+    float bwStart=TextW("Stop tracking")+30*k, bwMarker=TextW("Add marker")+30*k;
     float badgeW=TextW("EXPERIMENTAL")+18*k;
-    float needHead=pad+th+pad;
-    // header height: buttons must fit, so it becomes the max of text/pill height
-    float hh=std::max(needHead, btnH+pad*2);
-    // header title + badge + buttons, measured so nothing overlaps
-    float titleX=cur.x+28*k;
+    float hh=std::max(pad*2+th, btnH+pad*2);
+    float chevW=34*k;                 // collapse zone (left)
+    float titleX=cur.x+chevW;
     float badgeX=titleX+TextW("Runtime capture")+12*k;
-    float btnX=cur.x+w-pad-bw2-8*k-bw1;
+    float btnX=cur.x+w-pad-bwMarker-8*k-bwStart;
     bool badgeFits = badgeX+badgeW+10*k < btnX;
+
     ImGui::PushID("runtime");
-    bool hdrPressed=ImGui::InvisibleButton("##hdr_rt",ImVec2(w,hh));
-    bool hov=ImGui::IsItemHovered();
-    bool overBtn = hov && ImGui::GetIO().MousePos.x >= btnX-6*k;
-    if(hdrPressed && !overBtn) open=!open;
+    // 1) chevron / collapse zone only
+    ImGui::SetCursorScreenPos(cur);
+    bool chevPressed=ImGui::InvisibleButton("##collapse",ImVec2(chevW,hh));
+    bool chevHov=ImGui::IsItemHovered();
+    // 2) title zone: decorative, no click at all (nothing to steal)
     ImDrawList* dl=ImGui::GetWindowDrawList();
-    ImVec4 hc=hov?Mix(kCard,kText,0.03f):kCard;
+    ImVec4 hc=chevHov?Mix(kCard,kText,0.03f):kCard;
     dl->AddRectFilled(cur,ImVec2(cur.x+w,cur.y+hh),Col(hc),r,ImDrawFlags_RoundCornersTop);
     dl->AddRect(cur,ImVec2(cur.x+w,cur.y+hh),Col(kLine),r,ImDrawFlags_RoundCornersTop,Hair());
-    Chevron(dl,ImVec2(cur.x+14*k,cur.y+hh*0.5f),open,open?kMint:kDim);
+    Chevron(dl,ImVec2(cur.x+16*k,cur.y+hh*0.5f),open,open?kMint:kDim);
     ClipText(dl,ImVec2(titleX,cur.y+(hh-th)*0.5f),badgeX-titleX-6*k,kText,"Runtime capture");
     if(badgeFits){
       ImVec2 ba(badgeX,cur.y+(hh-18*k)*0.5f), bb(badgeX+badgeW,ba.y+18*k);
       dl->AddRectFilled(ba,bb,Col(kInner),4*k);
       CenterText(dl,ba,bb,kDim,"EXPERIMENTAL");
     }
-    // buttons live in the header, and their clicks are consumed BEFORE the
-    // header collapse test because the header hit box is drawn first: we test
-    // IsItemHovered for the button after drawing them, so re-check with the
-    // rect we know. (overBtn above already excludes the collapse.)
+    if(chevPressed) open=!open;
+
+    // 3) the two action buttons, right of the title, outside every hit zone
     ImGui::SetCursorScreenPos(ImVec2(btnX,cur.y+(hh-btnH)*0.5f));
-    if(ImGui::Button(open?"Stop tracking":"Start tracking",ImVec2(bw1,btnH))) open=!open;
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,5*k);
+    ImGui::PushStyleColor(ImGuiCol_Button, s_tracking?kMintDark:kInner2);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, s_tracking?Mix(kMintDark,kMint,0.25f):Mix(kInner2,kText,0.08f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, s_tracking?kMintDark:kInner);
+    ImGui::PushStyleColor(ImGuiCol_Text, s_tracking?kMint:kText);
+    if(ImGui::Button(s_tracking?"Stop tracking":"Start tracking",ImVec2(bwStart,btnH))){
+      s_tracking=!s_tracking;
+      if(s_tracking){ chams::dump_line("=== runtime capture started ==="); open=true; }
+      else chams::dump_line("=== runtime capture stopped ===");
+    }
+    ImGui::PopStyleColor(4);
     ImGui::SameLine(0,8*k);
-    if(ImGui::Button("Add marker",ImVec2(bw2,btnH))){ chams::dump_line("=== marker ===  runtime capture marker"); }
+    ImGui::PushStyleColor(ImGuiCol_Button,kInner2);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,Mix(kInner2,kText,0.08f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,kInner);
+    if(ImGui::Button("Add marker",ImVec2(bwMarker,btnH))){ chams::dump_line("=== marker ===  runtime capture marker"); }
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar();
     ImGui::PopID();
+
     ImGui::SetCursorScreenPos(ImVec2(cur.x,cur.y+hh));
     if(open){
       ImGui::PushStyleColor(ImGuiCol_ChildBg,kCard);
@@ -618,12 +645,12 @@ void reshade::runtime::draw_gui_chams(){
       ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize,Hair());
       ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,ImVec2(8*k,7*k));
       ImGui::BeginChild("runtime_body",ImVec2(w,0),ImGuiChildFlags_Borders|ImGuiChildFlags_AutoResizeY);
-      ImGui::TextDisabled("Tracking stopped");
-      // stats wrap to a second line instead of overlapping
+      // tracking state, shown here instead of on the button
+      ImGui::TextColored(s_tracking?kMint:kMuted, s_tracking?"Tracking active":"Tracking stopped");
       { const char* stats[]={"Frames 0","Contexts 0","Draw records 0","Dropped 0"};
         float avail=ImGui::GetContentRegionAvail().x; float x=0.f; bool same=false;
         for(int i=0;i<4;++i){ float wds=TextW(stats[i]); if(x+wds+16*Unit()>avail){ x=0.f; same=false; }
-          if(same){ ImGui::SameLine(0,18*Unit()); } else if(i>0){ /* new line */ }
+          if(same){ ImGui::SameLine(0,18*Unit()); }
           ImGui::TextDisabled("%s",stats[i]); x+=wds+18*Unit(); same=true; } }
       Divider();
       // dump rows: checkbox + hint (wrapped) + action on its own line
