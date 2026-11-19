@@ -571,11 +571,25 @@ void main()
 		// composite gates below and uses its OWN GL program, so it does not depend
 		// on the mask renderer (which only exists in Overlay render mode) and it
 		// keeps drawing while the ReShade menu is open.
+		// Any failure here must not reach the game: this runs inside
+		// wglSwapBuffers, and an escaping exception is a black screen. The radar is
+		// also switched off permanently if it throws once, so a broken build
+		// degrades to "no radar" instead of "no picture".
 		if (g_settings.radar_marks) {
-			chams_radar::frame_commit(g_settings.radar_area_m, g_settings.radar_yaw);
-			g_radar_bodies.store(chams_radar::state().bodies.load(), std::memory_order_relaxed);
-			chams_radar::sync_from_settings();
-			chams_radar::draw(true, false, 0, g_settings.radar_track);
+			static bool radar_dead = false;
+			if (!radar_dead) {
+				try {
+					chams_radar::frame_commit(g_settings.radar_area_m, g_settings.radar_yaw);
+					g_radar_bodies.store(chams_radar::state().bodies.load(), std::memory_order_relaxed);
+					chams_radar::sync_from_settings();
+					chams_radar::draw(true, false, 0, g_settings.radar_track);
+				}
+				catch (...) {
+					radar_dead = true;
+					reshade::log::message(reshade::log::level::error,
+						"[CHAMS] radar threw and has been disabled for this session");
+				}
+			}
 		}
 		// Stage 85: split disabled by reason (total preserved). Priority = source order:
 		// no_context > render_mode > not_enabled > menu_open. Same return behavior.

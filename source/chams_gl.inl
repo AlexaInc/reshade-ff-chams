@@ -2242,6 +2242,35 @@ namespace reshade::chams
 		if (g_opengl_context != nullptr)
 			observe_overlay_menu(g_overlay_open);
 
+		// ---- radar collection (stage 112) ----------------------------------
+		// BEFORE the gates below. g_overlay_open is set whenever the ReShade menu
+		// is open and this function bails out on it, so collecting after the gate
+		// meant the radar only ever saw players during the one moment everything
+		// else was suppressed -- which read as "always 0 players".
+		// Wrapped: this runs inside the game's draw, a throw would be a black screen.
+		if (s.radar_marks && g_opengl_context != nullptr && is_solid_primitive(mode) &&
+			mode == GL_TRIANGLES && count >= k_min_index_count)
+		{
+			try {
+				GLint rprog = 0;
+				if (gl.GetIntegerv) gl.GetIntegerv(GL_CURRENT_PROGRAM, &rprog);
+				if (rprog != 0 && program_is_character(rprog)) {
+					program_info *rinfo = get_program_info(rprog);
+					if (rinfo != nullptr) {
+						read_matrices(*rinfo);
+						float rcam[3] = { 0.0f, 0.0f, 0.0f };
+						camera_of(*rinfo, rcam);
+						chams_radar::note_camera(rcam);
+						if (rinfo->obj_to_world.valid()) {
+							const float wp[2] = { rinfo->world[12], rinfo->world[14] };
+							chams_radar::note_character(wp, false);
+						}
+					}
+				}
+			}
+			catch (...) { /* radar bookkeeping must never break a draw */ }
+		}
+
 		if (!s.enabled || g_opengl_context == nullptr || g_overlay_open ||
 			g_budget_left <= 0 || !is_solid_primitive(mode) || count <= 0)
 		{
@@ -2374,17 +2403,6 @@ namespace reshade::chams
 			monitor_draw(program, count, index_offset, dist, info->dist_source, "hide_own", false);
 			real_draw();
 			return;
-		}
-
-		// ---- minimap marks (stage 109) -------------------------------------
-		// This draw already passed character detection and the own-character
-		// exclusion, so its world position can go to the radar with no further
-		// test. Collected even when the chams effects are off, so the marks work
-		// on their own.
-		if (s.radar_marks && info->obj_to_world.valid()) {
-			chams_radar::note_camera(cam);
-			const float wp[2] = { info->world[12], info->world[14] };
-			chams_radar::note_character(wp, false);
 		}
 
 		// the "real clothes" modes draw the character even at strength 0

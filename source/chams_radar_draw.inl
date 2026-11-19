@@ -72,8 +72,20 @@ void main() { o_colour = u_colour; }
 		if (g.tried)
 			return false;
 		g.tried = true;
-		if (gl.CreateShader == nullptr || gl.CreateProgram == nullptr || gl.DrawArrays == nullptr)
+		// Full entry-point check: a missing VAO/BufferData entry point used to be a
+		// crash, and a crash inside wglSwapBuffers is a black screen.
+		if (gl.CreateShader == nullptr || gl.CreateProgram == nullptr ||
+			gl.DrawArrays == nullptr || gl.GenVertexArrays == nullptr ||
+			gl.BindVertexArray == nullptr || gl.GenBuffers == nullptr ||
+			gl.BufferData == nullptr || gl.VertexAttribPointer == nullptr ||
+			gl.EnableVertexAttribArray == nullptr || gl.GetShaderiv == nullptr ||
+			gl.GetProgramiv == nullptr || gl.GetUniformLocation == nullptr ||
+			gl.Uniform4f == nullptr || gl.UseProgram == nullptr)
+		{
+			reshade::log::message(reshade::log::level::warning,
+				"[CHAMS] radar disabled: GL entry points missing on this context");
 			return false;
+		}
 
 		const auto compile = [](GLenum type, const char *src) -> GLuint {
 			const GLuint s = gl.CreateShader(type);
@@ -177,17 +189,71 @@ void main() { o_colour = u_colour; }
 		}
 	}
 
+	// Our own state save/restore. The composite's overlay_state_guard also restores
+	// what we change, but it is defined AFTER this file is included, and reusing it
+	// would put the radar inside the mask pipeline's assumptions. This guard only
+	// touches what the radar changes, and runs on every exit path.
+	struct radar_state_guard
+	{
+		GLint program = 0, vao = 0, array_buffer = 0;
+		GLint vp[4] = { 0, 0, 0, 0 };
+		GLboolean blend = GL_FALSE, depth = GL_FALSE, scissor = GL_FALSE;
+		GLint depth_func = GL_LESS;
+		GLboolean depth_mask = GL_TRUE, color_mask[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
+		GLboolean blend_src = GL_ONE, blend_dst = GL_ZERO;
+		GLint blend_eq = GL_FUNC_ADD;
+
+		radar_state_guard()
+		{
+			if (gl.GetIntegerv == nullptr)
+				return;
+			gl.GetIntegerv(GL_CURRENT_PROGRAM, &program);
+			gl.GetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
+			gl.GetIntegerv(GL_ARRAY_BUFFER_BINDING, &array_buffer);
+			gl.GetIntegerv(GL_VIEWPORT, vp);
+			gl.GetIntegerv(GL_DEPTH_FUNC, &depth_func);
+			gl.GetIntegerv(GL_BLEND_EQUATION, &blend_eq);
+			gl.GetIntegerv(GL_BLEND_SRC_RGB, &blend_src);
+			gl.GetIntegerv(GL_BLEND_DST_RGB, &blend_dst);
+			if (gl.IsEnabled) {
+				blend = gl.IsEnabled(GL_BLEND);
+				depth = gl.IsEnabled(GL_DEPTH_TEST);
+				scissor = gl.IsEnabled(GL_SCISSOR_TEST);
+			}
+			if (gl.GetBooleanv) {
+				gl.GetBooleanv(GL_DEPTH_WRITEMASK, &depth_mask);
+				gl.GetBooleanv(GL_COLOR_WRITEMASK, color_mask);
+			}
+		}
+		~radar_state_guard()
+		{
+			if (gl.GetIntegerv == nullptr || gl.UseProgram == nullptr)
+				return;
+			gl.UseProgram(static_cast<GLuint>(program));
+			if (gl.BindVertexArray) gl.BindVertexArray(static_cast<GLuint>(vao));
+			gl.BindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(array_buffer));
+			gl.Viewport(vp[0], vp[1], vp[2], vp[3]);
+			gl.DepthFunc(static_cast<GLenum>(depth_func));
+			gl.DepthMask(depth_mask);
+			gl.ColorMask(color_mask[0], color_mask[1], color_mask[2], color_mask[3]);
+			gl.BlendEquation(static_cast<GLenum>(blend_eq));
+			gl.BlendFunc(static_cast<GLenum>(blend_src), static_cast<GLenum>(blend_dst));
+			if (depth == GL_TRUE) gl.Enable(GL_DEPTH_TEST); else gl.Disable(GL_DEPTH_TEST);
+			if (blend == GL_TRUE) gl.Enable(GL_BLEND);      else gl.Disable(GL_BLEND);
+			if (scissor == GL_TRUE) gl.Enable(GL_SCISSOR_TEST); else gl.Disable(GL_SCISSOR_TEST);
+		}
+	};
+
 	inline void draw_px_quads(std::vector<px_quad> &quads, const float colour[4],
 		float view_w, float view_h)
 	{
-		if (quads.empty() || !build())
+		if (quads.empty() || !build() || gl.DrawArrays == nullptr)
 			return;
 		radar_gpu &g = gpu();
 
-		// preserve the application's state, exactly like the mask composite does
-		overlay_state_guard guard;
+		radar_state_guard guard;
 		GLint vp[4] = { 0, 0, 0, 0 };
-		gl.GetIntegerv(GL_VIEWPORT, vp);
+		if (gl.GetIntegerv) gl.GetIntegerv(GL_VIEWPORT, vp);
 		const float vx = static_cast<float>(vp[0]), vy = static_cast<float>(vp[1]);
 		const float vw = vp[2] > 0 ? static_cast<float>(vp[2]) : view_w;
 		const float vh = vp[3] > 0 ? static_cast<float>(vp[3]) : view_h;
@@ -218,42 +284,100 @@ void main() { o_colour = u_colour; }
 			gl.Uniform4f(g.loc_rect, nx0, ny0, nx1 - nx0, ny1 - ny0);
 			gl.DrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 		}
+
+		// Drain our OWN GL errors. Leaving them in the queue made the composite's
+		// "success = GetError() == GL_NO_ERROR" check fail on every frame after the
+		// radar drew, which is the kind of cross-talk that ends in a black frame.
+		if (gl.GetError)
+			for (int i = 0; i < 8 && gl.GetError() != GL_NO_ERROR; ++i) {}
 	}
 
 	// Draw entry point, called from render_overlay() once per frame.
+	//
+	// SCISSOR (stage 112) -- everything the radar draws is clipped to the square's
+	// own rectangle. A geometry or state mistake can then only ever affect the
+	// radar square itself; it can never black out the frame. The scissor is set
+	// against the real viewport and restored by the guard.
 	inline void draw(bool marks, bool editor, int active_corner, bool track)
 	{
 		(void)editor;
 		(void)active_corner;
+		state_t &s = state();
+
 		GLint vp[4] = { 0, 0, 0, 0 };
+		if (gl.GetIntegerv == nullptr || gl.Scissor == nullptr)
+			return;
 		gl.GetIntegerv(GL_VIEWPORT, vp);
 		const float vw = vp[2] > 0 ? static_cast<float>(vp[2]) : 1920.0f;
 		const float vh = vp[3] > 0 ? static_cast<float>(vp[3]) : 1080.0f;
-		state_t &s = state();
+		if (vw < 2.0f || vh < 2.0f)
+			return;
+
+		// sane bounds: never trust the ini, a bad square must not become a screen
+		const float size = std::min(std::max(1.0f, s.size), std::max(2.0f, vw));
+		const float x = std::min(std::max(-size, s.x), vw);
+		const float y = std::min(std::max(-size, s.y), vh);
+		s.x = x;
+		s.y = y;
+		s.size = size;
 		const float k = std::max(1.0f, vh / 1080.0f);
 
-		std::vector<px_quad> quads;
+		// nothing to draw if the square is entirely off screen
+		if (x + size <= 0.0f || y + size <= 0.0f || x >= vw || y >= vh)
+			return;
 
-		// background plate, so the square reads on any scene
+		// clip to the square (plus the frame's half thickness), in GL's bottom-left
+		// pixel space, intersected with the viewport
+		const float pad = 4.0f * k;
+		const float sx0 = std::max(0.0f, x - pad);
+		const float sy0 = std::max(0.0f, y - pad);
+		const float sx1 = std::min(vw, x + size + pad);
+		const float sy1 = std::min(vh, y + size + pad);
+		if (sx1 - sx0 < 1.0f || sy1 - sy0 < 1.0f)
+			return;
+		const GLint gl_y = static_cast<GLint>(vh - sy1);
+		gl.Enable(GL_SCISSOR_TEST);
+		gl.Scissor(static_cast<GLint>(sx0), gl_y,
+			static_cast<GLsizei>(sx1 - sx0), static_cast<GLsizei>(sy1 - sy0));
+
+		// background plate (alpha 0 by default -- opt in, so it can never darken
+		// the corner of the game unless it was asked for)
 		if (g_settings.radar_bg_colour[3] > 0.01f) {
-			quads.clear();
-			quads.push_back({ s.x, s.y, s.x + s.size, s.y + s.size });
-			draw_px_quads(quads, g_settings.radar_bg_colour, vw, vh);
+			std::vector<px_quad> plate;
+			plate.push_back({ x, y, x + size, y + size });
+			draw_px_quads(plate, g_settings.radar_bg_colour, vw, vh);
 		}
 
 		// frame + centre ring
-		quads.clear();
-		push_frame(quads, s.x, s.y, s.size, std::max(1.0f, 1.4f * k));
-		push_ring(quads, s.x + s.size * 0.5f, s.y + s.size * 0.5f, 5.0f * k, 1.5f * k, 16);
-		draw_px_quads(quads, g_settings.radar_frame_colour, vw, vh);
+		{
+			std::vector<px_quad> quads;
+			push_frame(quads, x, y, size, std::max(1.0f, 1.4f * k));
+			push_ring(quads, x + size * 0.5f, y + size * 0.5f, 5.0f * k, 1.5f * k, 16);
+			draw_px_quads(quads, g_settings.radar_frame_colour, vw, vh);
+		}
 
-		if (!marks)
-			return;
-		for (int pass = 0; pass < 2; ++pass) {
-			quads.clear();
-			build_marks(quads, s, vh, pass == 1, track);
-			const float *col = pass == 1 ? g_settings.radar_wall_colour : g_settings.radar_dot_colour;
-			draw_px_quads(quads, col, vw, vh);
+		if (marks) {
+			s.x = x;
+			s.y = y;
+			s.size = size;
+			for (int pass = 0; pass < 2; ++pass) {
+				std::vector<px_quad> quads;
+				build_marks(quads, s, vh, pass == 1, track);
+				const float *col = pass == 1 ? g_settings.radar_wall_colour : g_settings.radar_dot_colour;
+				draw_px_quads(quads, col, vw, vh);
+			}
+		}
+
+		// facts, so a report can be diagnosed from the ReShade log instead of a guess
+		static unsigned last_log = 0;
+		const unsigned bodies = s.bodies.load(std::memory_order_relaxed);
+		if (g_frame_id.load(std::memory_order_relaxed) - last_log > 600) {
+			last_log = g_frame_id.load(std::memory_order_relaxed);
+			radar_gpu &g = gpu();
+			reshade::log::message(reshade::log::level::info,
+				"[RADAR] on=1 program=%d ready=%d drawn=%u shown=%zu square=%.0f,%.0f size=%.0f viewport=%.0fx%.0f",
+				static_cast<int>(g.program), g.ready ? 1 : 0, bodies, s.shown.size(),
+				x, y, size, vw, vh);
 		}
 	}
 }
