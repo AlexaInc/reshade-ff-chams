@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(AeonSR_GraphicsEnhancer # fork AlexaInc VERSION 1.3.2 LANGUAGES C CXX)
+project(AeonSR_GraphicsEnhancer VERSION 1.3.2 LANGUAGES C CXX)
 
 set(AEONSR_VERSION_STR "${PROJECT_VERSION}")
 
