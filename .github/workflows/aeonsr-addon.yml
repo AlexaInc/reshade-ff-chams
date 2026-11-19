@@ -97,16 +97,19 @@ jobs:
             Copy-Item -Recurse -Force (Join-Path $from '*') $to
             Write-Host "COPY: $from -> $to"
           }
-          # ffx_upscale.h includes ../../api/include/ffx_api.h, so the sibling
-          # tree third_party/api/include must exist next to third_party/ffx —
-          # that is how upstream lays these out.
+          # ffx_upscale.h includes ../../api/include/ffx_api.h (relative to the
+          # ffx tree), so the API headers live once in third_party/api/include.
+          # ffx/include/ffx_api.h must NOT be a second copy: that redefines every
+          # FfxApi type (C2011). It is a one-line forwarder instead.
           CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/api/include" "third_party/api/include"
-          CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/api/include" "third_party/ffx/include"
           CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/upscalers/include" "third_party/ffx/include"
           CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/framegeneration/include" "third_party/ffx/include"
           CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/api/include" "third_party/ffx_dx11/include"
           CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/upscalers/include" "third_party/ffx_dx11/include"
           CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/framegeneration/include" "third_party/ffx_dx11/include"
+          foreach ($h in @("ffx_api.h","ffx_api_types.h","ffx_api_loader.h","ffx_api_matrix_helpers.h")) {
+            Set-Content -Path "third_party/ffx/include/$h" -Encoding ascii -Value "#pragma once`n#include `"../../api/include/$h`"`n"
+          }
           CopyTree "external/xess/inc" "third_party/xess/include"
           CopyTree "external/Vulkan-Headers/include/vk_video" "third_party/khronos/include/GL"
           Write-Host "--- third_party tree ---"
