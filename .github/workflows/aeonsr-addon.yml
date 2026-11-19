@@ -181,14 +181,26 @@ jobs:
           path: out/*
           if-no-files-found: error
 
+      # Idempotent: re-running the build refreshes the assets of an existing
+      # release instead of failing on "tag already exists".
       - name: Publish release to the AeonSR fork
         if: ${{ inputs.publish }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.AEONSR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "graphics-enhancer-v$env:VERSION" (Get-ChildItem out/*.addon64).FullName (Get-ChildItem out/*.addonfx).FullName `
-            --repo $env:AEONSR_REPO `
-            --title "Graphics Enhancer by AlexaInc v$env:VERSION (Aeon SR fork)" `
-            --notes-file ci/.github/RELEASE_AEONSR.md `
-            --latest
+          $tag = "graphics-enhancer-v$env:VERSION"
+          $files = (Get-ChildItem out/*.addon64).FullName + (Get-ChildItem out/*.addonfx).FullName
+          gh release view $tag --repo $env:AEONSR_REPO *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $tag exists: refreshing assets"
+            gh release upload $tag @files --repo $env:AEONSR_REPO --clobber
+            gh release edit $tag --repo $env:AEONSR_REPO --notes-file ci/.github/RELEASE_AEONSR.md
+          } else {
+            Write-Host "Creating release $tag"
+            gh release create $tag @files `
+              --repo $env:AEONSR_REPO `
+              --title "Graphics Enhancer by AlexaInc v$env:VERSION (Aeon SR fork)" `
+              --notes-file ci/.github/RELEASE_AEONSR.md `
+              --latest
+          }
