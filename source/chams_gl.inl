@@ -2825,6 +2825,11 @@ namespace chams_radar
 }
 
 // ---- drawing helpers -------------------------------------------------------
+// This half needs overlay_gpu / ov() / overlay_state_guard, which chams_overlay.inl
+// declares, so it lives at the end of the file -- still inside reshade::chams so
+// the chams_radar names the rest of this file uses resolve to the same functions.
+namespace reshade::chams
+{
 namespace chams_radar
 {
 	// One screen-space quad, in pixels, from the GL viewport's top left corner.
@@ -3032,4 +3037,4 @@ namespace chams_radar
 		}
 	}
 }
-
+} // namespace reshade::chams
