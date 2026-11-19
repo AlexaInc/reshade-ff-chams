@@ -63,7 +63,15 @@ jobs:
         working-directory: aeonsr
         run: |
           git clone --depth 1 https://github.com/crosire/reshade.git external/reshade
-          git -C external/reshade submodule update --init --depth 1 deps/imgui deps/minhook deps/spirv deps/stb deps/dds
+          # reshade's paths are deps/<name>; the submodule names are the bare ones
+          # and 'deps/dds' does not exist (it is deps/d3d12), which made the whole
+          # command fail and left imgui/minhook/spirv unpopulated.
+          foreach ($dep in @("imgui","minhook","stb","spirv","glad","utfcpp","vma","fpng","d3d12")) {
+            git -C external/reshade submodule update --init --depth 1 "deps/$dep"
+            if ($LASTEXITCODE -ne 0) { Write-Host "WARN: deps/$dep did not init (code $LASTEXITCODE)" }
+          }
+          $must = @("external/reshade/include/reshade.hpp","external/reshade/deps/imgui/imgui.h","external/reshade/deps/minhook/src/hook.c","external/reshade/deps/spirv/include/spirv/unified1/spirv.hpp")
+          foreach ($m in $must) { if (-not (Test-Path $m)) { throw "dependency missing after init: $m" } }
           git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git external/Vulkan-Headers
           git clone --depth 1 https://github.com/NVIDIA/DLSS.git external/DLSS
           git clone --depth 1 https://github.com/intel/xess.git external/xess
