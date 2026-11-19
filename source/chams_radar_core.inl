@@ -42,6 +42,11 @@
 
 namespace chams_radar
 {
+	// defined in chams_radar_draw.inl, which needs the overlay types declared by
+	// chams_overlay.inl. Declared here because the overlay calls it from between
+	// the two includes.
+	inline void draw(bool marks, bool editor, int active_corner, bool track);
+
 	struct mark
 	{
 		float world[2] = { 0.0f, 0.0f }; // x, z in world units
