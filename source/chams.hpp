@@ -184,6 +184,9 @@ namespace reshade::chams
 	void export_mask_if_requested(); // diagnostic mask export POC (Stage 50A, flag-gated)
 	void capture_clean_frame(); // clean-frame capture POC (Stage 70, flag-gated)
 	void poll_hotkey();      // F8: master switch on/off
+	// live radar marks (stage 110): published by the draw unit, read by the menu
+	extern std::atomic<unsigned> g_radar_bodies;
+	unsigned radar_marks_now();
 	void load();
 	void ensure_loaded();  // apply saved settings before the first chams draw
 	void save();

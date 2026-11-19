@@ -833,9 +833,9 @@ void reshade::runtime::draw_gui_chams(){
     } else s_dragging=false;
     // faint outline of the square inside the menu, so it can be found by eye
     ImDrawList *dl=ImGui::GetForegroundDrawList();
-    dl->AddRect(ImVec2(x,y),ImVec2(x+side,y+side),ImGui::GetColorU32(kMint,0.55f),0.f,0,1.5f);
-    dl->AddRectFilled(ImVec2(x+side-handle,y+side-handle),ImVec2(x+side,y+side),ImGui::GetColorU32(kMint,0.35f),2.f);
-    dl->AddCircleFilled(ImVec2(x+side*0.5f,y+side*0.5f),4.f,ImGui::GetColorU32(kMint,0.9f),12);
+    dl->AddRect(ImVec2(x,y),ImVec2(x+side,y+side),ImGui::GetColorU32(ImVec4(kMint.x,kMint.y,kMint.z,0.55f)),0.f,0,1.5f);
+    dl->AddRectFilled(ImVec2(x+side-handle,y+side-handle),ImVec2(x+side,y+side),ImGui::GetColorU32(ImVec4(kMint.x,kMint.y,kMint.z,0.35f)),2.f);
+    dl->AddCircleFilled(ImVec2(x+side*0.5f,y+side*0.5f),4.f,ImGui::GetColorU32(ImVec4(kMint.x,kMint.y,kMint.z,0.90f)),12);
     if(s_resizing) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE);
     else if(s_dragging||overSquare) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
   }
