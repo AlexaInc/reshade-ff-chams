@@ -78,7 +78,7 @@ jobs:
           # FidelityFX SDK is large: only the kit headers, signed binaries and
           # the licence are needed, so fetch with a sparse, blobless checkout.
           git clone --depth 1 --filter=blob:none --sparse https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK.git external/FidelityFX-SDK
-          git -C external/FidelityFX-SDK sparse-checkout set Kits/FidelityFX/signedbin Kits/FidelityFX/api/include Kits/FidelityFX/upscalers/include Kits/FidelityFX/framegeneration/include docs
+          git -C external/FidelityFX-SDK sparse-checkout set Kits/FidelityFX/signedbin Kits/FidelityFX/api/include Kits/FidelityFX/upscalers/include Kits/FidelityFX/framegeneration/include Kits/FidelityFX/backend Kits/FidelityFX/docs
           Write-Host "--- external ---"
           Get-ChildItem external | Select-Object Name | Out-String | Write-Host
 
@@ -101,6 +101,7 @@ jobs:
           CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/upscalers/include" "third_party/ffx/include"
           CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/api/include" "third_party/ffx_dx11/include"
           CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/upscalers/include" "third_party/ffx_dx11/include"
+          CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/framegeneration/include" "third_party/ffx/include"
           CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/framegeneration/include" "third_party/ffx_dx11/include"
           CopyTree "external/xess/inc" "third_party/xess/include"
           CopyTree "external/Vulkan-Headers/include/vk_video" "third_party/khronos/include/GL"
