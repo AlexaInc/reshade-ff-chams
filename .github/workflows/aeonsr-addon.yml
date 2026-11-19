@@ -1,0 +1,117 @@
+name: aeonsr-addon
+
+# Builds the AlexaInc "Graphics Enhancer" fork of Aeon SR (.addon64) on a Windows
+# runner, then publishes the built add-on into AlexaInc/AeonSR-Graphics-Enhancer
+# as a new branch + release.
+#
+# Why it lives here: this repo already has the CI token and the working Windows
+# build recipe; the AeonSR fork is a fork of an existing project whose vendor
+# SDKs (DLSS / XeSS / FidelityFX) are not redistributable from source, so the
+# release carries the built AeonSR.addon64 only, and installing instructions
+# tell the user to drop it into the ReShade add-on folder.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version label used in the release tag (e.g. 1.3.2)"
+        required: true
+        default: "1.3.2"
+      publish:
+        description: "Push the built add-on to AlexaInc/AeonSR-Graphics-Enhancer as a release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      AEONSR_REPO: AlexaInc/AeonSR-Graphics-Enhancer
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Checkout this repo (for the CI helper scripts)
+        uses: actions/checkout@v4
+        with:
+          path: ci
+
+      - name: Checkout AeonSR fork
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.AEONSR_REPO }}
+          path: aeonsr
+          token: ${{ secrets.AEONSR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+          submodules: false
+          fetch-depth: 1
+
+      - name: Submodules (ReShade, Vulkan headers, DLSS, XeSS, FidelityFX)
+        shell: pwsh
+        working-directory: aeonsr
+        run: |
+          git submodule update --init --depth 1 external/reshade external/Vulkan-Headers external/DLSS external/xess
+          git -C external/reshade submodule update --init --depth 1 deps/imgui deps/minhook deps/spirv deps/stb deps/dds
+          # FidelityFX SDK is large; only the kit headers + signed binaries are needed.
+          git submodule update --init --depth 1 external/FidelityFX-SDK
+
+      - name: FidelityFX / Khronos headers expected by CMake
+        shell: pwsh
+        working-directory: aeonsr
+        run: |
+          $ffx = "third_party/ffx/include"; New-Item -ItemType Directory -Force -Path $ffx | Out-Null
+          Copy-Item -Recurse -Force "external/FidelityFX-SDK/Kits/FidelityFX/api/include/*" $ffx
+          $ffxdx11 = "third_party/ffx_dx11/include"; New-Item -ItemType Directory -Force -Path $ffxdx11 | Out-Null
+          Copy-Item -Recurse -Force "external/FidelityFX-SDK/Kits/FidelityFX/api/include/*" $ffxdx11
+          Copy-Item -Recurse -Force "external/FidelityFX-SDK/Kits/FidelityFX/upscalers/include/*" $ffxdx11 -ErrorAction SilentlyContinue
+          $xess = "third_party/xess/include"; New-Item -ItemType Directory -Force -Path $xess | Out-Null
+          Copy-Item -Recurse -Force "external/xess/inc/*" $xess
+          $khronos = "third_party/khronos/include"; New-Item -ItemType Directory -Force -Path $khronos | Out-Null
+          Copy-Item -Recurse -Force "external/Vulkan-Headers/include/vk_video/*" $khronos -ErrorAction SilentlyContinue
+
+      - name: Configure
+        shell: pwsh
+        working-directory: aeonsr
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DAEONSR_DLSS_SDK="$PWD/external/DLSS" `
+            -DAEONSR_XESS_SDK="$PWD/external/xess" `
+            -DAEONSR_FFX_SDK="$PWD/external/FidelityFX-SDK" `
+            -DRESHADE_ROOT="$PWD/external/reshade"
+
+      - name: Build (AeonSR add-on target only)
+        shell: pwsh
+        working-directory: aeonsr
+        run: cmake --build build --config Release --target AeonSR -- /m /v:m
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $addon = Get-ChildItem -Recurse aeonsr/build -Include AeonSR.addon64, AeonSR.addon32 -File | Select-Object -First 5
+          if (-not $addon) { throw "AeonSR.addon64 was not produced" }
+          $addon | ForEach-Object { Copy-Item $_.FullName out/ }
+          Copy-Item aeonsr/package/AeonSR.addonfx out/ -ErrorAction SilentlyContinue
+          Copy-Item aeonsr/package/AeonSR.svg out/ -ErrorAction SilentlyContinue
+          Copy-Item aeonsr/res/alexainc_logo.png out/ -ErrorAction SilentlyContinue
+          Copy-Item aeonsr/README.md out/README-AeonSR-Graphics-Enhancer.md -ErrorAction SilentlyContinue
+          Get-ChildItem out | Select-Object Name, Length | Format-Table | Out-String | Write-Host
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AeonSR-Graphics-Enhancer-${{ inputs.version }}
+          path: out/*
+          if-no-files-found: error
+
+      - name: Publish release to the AeonSR fork
+        if: ${{ inputs.publish }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.AEONSR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "graphics-enhancer-v$env:VERSION" (Get-ChildItem out/*.addon64).FullName (Get-ChildItem out/*.addonfx).FullName `
+            --repo $env:AEONSR_REPO `
+            --title "Graphics Enhancer by AlexaInc v$env:VERSION (Aeon SR fork)" `
+            --notes-file ci/.github/RELEASE_AEONSR.md `
+            --latest
