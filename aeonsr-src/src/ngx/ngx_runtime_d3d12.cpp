@@ -1,0 +1,498 @@
+#include "aeon_sr/ngx/ngx_runtime_d3d12.hpp"
+#include "aeon_sr/ngx/ngx_api12.hpp"
+#include "aeon_sr/ngx/ngx_common.hpp"
+#include "aeon_sr/ngx/ngx_dlssg_files.hpp"
+#include "aeon_sr/ngx/ngx_session_ngx.hpp"
+#include "aeon_sr/ngx/ngx_shared_d3d12.hpp"
+
+#include <excpt.h>
+
+#include <nvsdk_ngx.h>
+#include <nvsdk_ngx_helpers.h>
+
+#include <cstring>
+#include <mutex>
+#include <vector>
+
+namespace aeon_sr {
+
+void NgxRuntimeD3D12::set_command_queue(ID3D12CommandQueue *q)
+{
+	queue = q;
+}
+
+void NgxRuntimeD3D12::wait_gpu()
+{
+	gpu_fence.signal_and_wait(device, queue);
+}
+
+bool NgxRuntimeD3D12::init_device(ID3D12Device *dev, uint32_t w, uint32_t h)
+{
+	shutdown_device();
+	device = dev;
+	width = w; height = h;
+	crashed = false;
+
+	if (!ensure_dll_present())
+		return false;
+	api = layer_path.empty() ? &ngx12_api(addon_dir) : &ngx12_layer_api(layer_path);
+	if (!api->usable()) {
+		status = UpscalerStatus::InitFailed;
+		last_error = (layer_path.empty() ? L"DLSS was to run through " : L"DLSS input was to go to ") +
+			api->path + L", but " + api->error;
+		return false;
+	}
+	if (device == nullptr) {
+		status = UpscalerStatus::InitFailed;
+		last_error = L"null D3D12 device";
+		return false;
+	}
+
+	prepare_data_dir();
+	diag_info("dlss", L"=== D3D12 init_device begin ===");
+	{
+		wchar_t buf[256]{};
+		_snwprintf_s(buf, _TRUNCATE, L"addon_dir=%s dll_dir=%s data_dir=%s size=%ux%u",
+			addon_dir.c_str(), dll_dir.c_str(), data_dir.c_str(), w, h);
+		diag_info("dlss", buf);
+	}
+	{
+
+		std::wstring found;
+		for (const wchar_t *m : { L"sl.interposer.dll", L"sl.dlss.dll", L"sl.dlss_g.dll",
+				L"nvngx_dlss.dll", L"nvngx_dlssg.dll", L"_nvngx.dll" }) {
+			if (GetModuleHandleW(m) != nullptr) {
+				if (!found.empty()) found += L", ";
+				found += m;
+			}
+		}
+		diag_info("dlss", found.empty()
+			? std::wstring(L"pre-init NGX modules in process: none")
+			: (L"pre-init NGX modules in process: " + found));
+	}
+
+	const std::wstring own_dir = !dll_dir.empty() ? dll_dir : addon_dir;
+	std::wstring search_dir = layer_path.empty() ? ngx12_feature_dir(*api, own_dir) : own_dir;
+	if (!layer_path.empty()) {
+		const std::wstring d4r = ngx_override_dlss_dir(ngx_override_path(addon_dir));
+		if (!d4r.empty())
+			search_dir = d4r;
+	}
+	std::vector<std::wstring> dirs{ search_dir };
+	if (layer_path.empty() && !api->external()) {
+		const NgxPathList list = ngx_path_list_for(search_dir, find_dlssg(addon_dir));
+		if (!list.dirs.empty())
+			dirs = list.dirs;
+		if (dirs.size() > 1 || !list.note.empty())
+			diag_info("dlss", L"NGX folders: " + dirs[0] + (dirs.size() > 1 ? L", then " + dirs[1] : L"") +
+				(list.note.empty() ? L"" : L" (nvngx_dlssg.dll's " + list.note + L")"));
+	}
+	std::vector<const wchar_t *> path_list;
+	for (const std::wstring &d : dirs)
+		path_list.push_back(d.c_str());
+	NVSDK_NGX_FeatureCommonInfo feature_info{};
+	feature_info.PathListInfo.Path = path_list.data();
+	feature_info.PathListInfo.Length = static_cast<unsigned int>(path_list.size());
+	feature_info.LoggingInfo.LoggingCallback = ngx_log_callback;
+	feature_info.LoggingInfo.MinimumLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_ON;
+	feature_info.LoggingInfo.DisableOtherLoggingSinks = false;
+
+	const NVSDK_NGX_Result init_res = ngx12_acquire(*api, device, data_dir.c_str(), &feature_info, log_tag);
+	if (NVSDK_NGX_FAILED(init_res)) {
+		status = UpscalerStatus::InitFailed;
+		last_error = ngx_format_result(L"NGX D3D12 Init failed", init_res);
+		const std::wstring tail = diag_last_line();
+		if (!tail.empty()) last_error += L" | " + tail;
+		ngx_initialized = false;
+		return false;
+	}
+	ngx_initialized = true;
+
+	NVSDK_NGX_Parameter *p = nullptr;
+	const NVSDK_NGX_Result cap_res = api->capability_parameters(&p);
+	diag_info("dlss", ngx_format_result(L"D3D12 GetCapabilityParameters", cap_res));
+	if (NVSDK_NGX_FAILED(cap_res) || p == nullptr) {
+		if (p != nullptr)
+			api->destroy_parameters(p);
+		status = UpscalerStatus::InitFailed;
+		last_error = ngx_format_result(L"D3D12 GetCapabilityParameters", cap_res);
+		wait_gpu();
+		ngx12_release(*api, device, log_tag);
+		ngx_initialized = false;
+		return false;
+	}
+	params = p;
+
+	int available = 0;
+	p->Get(NVSDK_NGX_Parameter_SuperSampling_Available, &available);
+	diag_info("dlss", std::wstring(L"D3D12 SuperSampling.Available=") + (available ? L"1" : L"0"));
+	if (!available) {
+		status = UpscalerStatus::InitFailed;
+		last_error = L"DLSS SuperSampling not available (driver/GPU/DLL)";
+		api->destroy_parameters(p);
+		params = nullptr;
+		wait_gpu();
+		ngx12_release(*api, device, log_tag);
+		ngx_initialized = false;
+		return false;
+	}
+
+	status = UpscalerStatus::Idle;
+	last_error.clear();
+	diag_info("dlss", L"=== D3D12 init_device ok ===");
+	return true;
+}
+
+void NgxRuntimeD3D12::shutdown_device()
+{
+	diag_info("dlss", L"D3D12 shutdown_device");
+	destroy_feature();
+	blit_.release();
+	if (params != nullptr) {
+		api->destroy_parameters(reinterpret_cast<NVSDK_NGX_Parameter *>(params));
+		params = nullptr;
+	}
+	if (ngx_initialized && device != nullptr) {
+		wait_gpu();
+		ngx12_release(*api, device, log_tag);
+		ngx_initialized = false;
+	}
+	init_list.release();
+	gpu_fence.release();
+	queue = nullptr;
+	device = nullptr;
+	reset_after_shutdown();
+}
+
+void NgxRuntimeD3D12::destroy_feature()
+{
+
+	if (feature_handle != nullptr || output_tex != nullptr || color_copy != nullptr ||
+		depth_scratch != nullptr || color_full != nullptr) {
+		diag_trace("dlss", L"D3D12 destroy_feature (wait_gpu)");
+		wait_gpu();
+	}
+	if (feature_handle != nullptr && ngx_initialized) {
+		api->release_feature(reinterpret_cast<NVSDK_NGX_Handle *>(feature_handle));
+		feature_handle = nullptr;
+	}
+	release_scratch();
+}
+
+void NgxRuntimeD3D12::release_scratch()
+{
+	for (ID3D12Resource **r : { &output_tex, &color_copy, &depth_scratch, &bias_scratch,
+			&color_full }) {
+		if (*r) { (*r)->Release(); *r = nullptr; }
+	}
+	created_backbuffer_format = DXGI_FORMAT_UNKNOWN;
+}
+
+namespace {
+
+NVSDK_NGX_Result create_dlss_guarded(const Ngx12Api &api, ID3D12GraphicsCommandList *cmd,
+	NVSDK_NGX_Handle **handle, NVSDK_NGX_Parameter *params,
+	NVSDK_NGX_DLSS_Create_Params *create, unsigned long *seh_code)
+{
+	__try {
+		return api.create_dlss(cmd, handle, params, create);
+	} __except ((*seh_code = GetExceptionCode()), EXCEPTION_EXECUTE_HANDLER) {
+		return NVSDK_NGX_Result_Fail;
+	}
+}
+
+NVSDK_NGX_Result evaluate_dlss_guarded(const Ngx12Api &api, ID3D12GraphicsCommandList *cmd,
+	NVSDK_NGX_Handle *handle, NVSDK_NGX_Parameter *params,
+	NVSDK_NGX_D3D12_DLSS_Eval_Params *eval, unsigned long *seh_code)
+{
+	__try {
+		return api.evaluate_dlss(cmd, handle, params, eval);
+	} __except ((*seh_code = GetExceptionCode()), EXCEPTION_EXECUTE_HANDLER) {
+		return NVSDK_NGX_Result_Fail;
+	}
+}
+
+}
+
+bool NgxRuntimeD3D12::ensure_feature(ID3D12GraphicsCommandList *cmd, uint32_t w, uint32_t h, DXGI_FORMAT color_format)
+{
+	if (!ngx_initialized || params == nullptr || cmd == nullptr || device == nullptr)
+		return false;
+
+	const DlssFeatureKey key = DlssFeatureKey::from(cfg);
+	if (feature_handle != nullptr && width == w && height == h && output_tex != nullptr &&
+		scratch_format == color_format && created == key &&
+		created_backbuffer_format == backbuffer_format)
+		return true;
+
+	diag_info("dlss", L"D3D12 ensure_feature: recreate");
+	destroy_feature();
+	width = w; height = h;
+	scratch_format = color_format;
+	created = key;
+
+	auto *p = reinterpret_cast<NVSDK_NGX_Parameter *>(params);
+	NVSDK_NGX_PerfQuality_Value perf = NVSDK_NGX_PerfQuality_Value_DLAA;
+	if (!ngx_dlss::resolve_render_size(*this, w, h, &perf))
+		return false;
+
+	NVSDK_NGX_Parameter *create_params = nullptr;
+	if (NVSDK_NGX_FAILED(api->allocate_parameters(&create_params)) || create_params == nullptr)
+		create_params = p;
+
+	ngx_dlss::set_preset_hints(create_params, cfg);
+
+	NVSDK_NGX_DLSS_Create_Params create;
+	ngx_dlss::fill_create_params(*this, w, h, perf, &create);
+
+	{
+		wchar_t buf[192]{};
+		_snwprintf_s(buf, _TRUNCATE, L"D3D12 ensure_feature: CreateFeature %ux%u -> %ux%u fmt=%u preset=%u",
+			render_width, render_height, w, h, static_cast<unsigned>(color_format), cfg.render_preset);
+		diag_info("dlss", buf);
+	}
+
+	ID3D12GraphicsCommandList *create_cmd = queue != nullptr ? init_list.begin(device) : nullptr;
+	const bool own_list = create_cmd != nullptr;
+	if (!own_list)
+		create_cmd = cmd;
+
+	NVSDK_NGX_Handle *handle = nullptr;
+	unsigned long seh_code = 0;
+	const NVSDK_NGX_Result cr = create_dlss_guarded(*api, create_cmd, &handle, create_params, &create, &seh_code);
+	if (seh_code != 0) {
+		crashed = true;
+		status = UpscalerStatus::InitFailed;
+		{
+			wchar_t buf[128]{};
+			_snwprintf_s(buf, _TRUNCATE, L"D3D12 CreateFeature CRASHED (exception 0x%08lX) - DLAA disabled", seh_code);
+			last_error = buf;
+			diag_info("dlss", buf);
+		}
+		if (own_list)
+			init_list.end(device, queue, gpu_fence, false);
+		if (create_params != p && create_params != nullptr)
+			api->destroy_parameters(create_params);
+		return false;
+	}
+	diag_info("dlss", ngx_format_result(L"D3D12 CreateFeature", cr));
+	if (own_list)
+		init_list.end(device, queue, gpu_fence, !NVSDK_NGX_FAILED(cr) && handle != nullptr);
+	if (create_params != p && create_params != nullptr)
+		api->destroy_parameters(create_params);
+	if (NVSDK_NGX_FAILED(cr) || handle == nullptr) {
+		status = UpscalerStatus::InitFailed;
+		last_error = ngx_format_result(L"D3D12 CreateFeature failed", cr);
+		return false;
+	}
+	feature_handle = handle;
+
+	diag_info("dlss", L"D3D12 ensure_feature: create_tex");
+
+	if (!create_tex12(device, width, height, color_format, true, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &output_tex) ||
+		!create_tex12(device, render_width, render_height, color_format, true, kNgxSrvState, &color_copy)) {
+		destroy_feature();
+		status = UpscalerStatus::InitFailed;
+		last_error = L"failed to create D3D12 scratch textures";
+		return false;
+	}
+
+	if (!create_tex12(device, render_width, render_height, DXGI_FORMAT_R32_FLOAT, false, kNgxSrvState, &depth_scratch)) {
+		destroy_feature();
+		status = UpscalerStatus::InitFailed;
+		last_error = L"failed to create D3D12 depth scratch";
+		return false;
+	}
+	if (!create_tex12(device, render_width, render_height, DXGI_FORMAT_R8_UNORM, false, kNgxSrvState, &bias_scratch)) {
+		destroy_feature();
+		status = UpscalerStatus::InitFailed;
+		last_error = L"failed to create D3D12 bias mask scratch";
+		return false;
+	}
+
+	if (!create_tex12(device, width, height, backbuffer_format, false, D3D12_RESOURCE_STATE_COPY_DEST, &color_full)) {
+		destroy_feature();
+		status = UpscalerStatus::InitFailed;
+		last_error = L"failed to create D3D12 color staging";
+		return false;
+	}
+	created_backbuffer_format = backbuffer_format;
+
+	status = UpscalerStatus::Ready;
+	last_error.clear();
+	diag_info("dlss", L"D3D12 ensure_feature ok");
+	return true;
+}
+
+bool NgxRuntimeD3D12::run(ID3D12GraphicsCommandList *cmd,
+	ID3D12Resource *backbuffer, D3D12_RESOURCE_STATES backbuffer_state,
+	ID3D12Resource *motion_vectors,
+	ID3D12Resource *depth, ID3D12Resource *bias_mask,
+	ID3D12Resource *output, D3D12_RESOURCE_STATES output_state)
+{
+	if (crashed)
+		return false;
+	if (!ngx_initialized || params == nullptr || cmd == nullptr || device == nullptr)
+		return false;
+	if (backbuffer == nullptr || motion_vectors == nullptr)
+		return false;
+	diag_trace("dlss", L"D3D12 run: begin");
+	engine_journal_note(L"DLSS run");
+	ID3D12Resource *const target = output != nullptr ? output : backbuffer;
+	const D3D12_RESOURCE_STATES target_state = output != nullptr ? output_state : backbuffer_state;
+	const D3D12_RESOURCE_DESC bb_desc = target->GetDesc();
+	backbuffer_format = bb_desc.Format;
+	const DXGI_FORMAT fmt = upscaler_scratch_format(bb_desc.Format);
+	const uint32_t w = static_cast<uint32_t>(bb_desc.Width);
+	const uint32_t h = bb_desc.Height;
+	{
+		wchar_t buf[128]{};
+		_snwprintf_s(buf, _TRUNCATE, L"D3D12 run: bb %ux%u fmt=%u scratch=%u", w, h,
+			static_cast<unsigned>(bb_desc.Format), static_cast<unsigned>(fmt));
+		diag_trace("dlss", buf);
+	}
+
+	if (!blit_.ensure(device)) {
+		diag_error("dlss", L"D3D12 run: the blit pipeline would not build");
+		return false;
+	}
+	if (!ensure_feature(cmd, w, h, fmt)) {
+		diag_error("dlss", L"D3D12 run: the DLSS feature would not build");
+		return false;
+	}
+
+	const bool in_place = output != nullptr || reads_like_copy12(backbuffer, backbuffer_format);
+	const D3D12_RESOURCE_STATES read_state =
+		in_place ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_COPY_SOURCE;
+	ID3D12Resource *const color_src = in_place ? backbuffer : color_full;
+	barrier12(cmd, backbuffer, backbuffer_state, read_state);
+	if (!in_place) {
+		cmd->CopyResource(color_full, backbuffer);
+		barrier12(cmd, color_full, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+	}
+	barrier12(cmd, color_copy, kNgxSrvState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+	jitter_x = cfg.jitter_x;
+	jitter_y = cfg.jitter_y;
+
+	const float shift_x = cfg.jitter_in_frame ? 0.0f : jitter_x;
+	const float shift_y = cfg.jitter_in_frame ? 0.0f : jitter_y;
+	const float jitter_u = render_width > 0 ? -shift_x / static_cast<float>(render_width) : 0.0f;
+	const float jitter_v = render_height > 0 ? -shift_y / static_cast<float>(render_height) : 0.0f;
+	bool ok = blit_.draw_fullscreen(device, cmd, color_src,
+		color_copy, scratch_format, render_width, render_height, 0.0f, 0u,
+		jitter_u, jitter_v);
+
+	barrier12(cmd, color_copy, D3D12_RESOURCE_STATE_RENDER_TARGET, kNgxSrvState);
+	if (!in_place)
+		barrier12(cmd, color_full, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+	if (!ok) {
+		status = UpscalerStatus::EvaluateFailed;
+		last_error = L"failed to blit color into UAV scratch";
+		diag_error("dlss", last_error);
+	}
+
+	if (ok)
+		ok = evaluate_inputs(cmd, color_copy, depth, motion_vectors, bias_mask, jitter_u, jitter_v);
+
+	if (output != nullptr) {
+		barrier12(cmd, backbuffer, read_state, backbuffer_state);
+		barrier12(cmd, target, target_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+	} else {
+		barrier12(cmd, backbuffer, read_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+	}
+	if (ok) {
+		diag_trace("dlss", L"D3D12 run: composite");
+		ok = blit_.draw_fullscreen(device, cmd, output_tex,
+			target, backbuffer_format, width, height, cfg.sharpness);
+	}
+	if (target_state != D3D12_RESOURCE_STATE_RENDER_TARGET)
+		barrier12(cmd, target, D3D12_RESOURCE_STATE_RENDER_TARGET, target_state);
+
+	if (ok) {
+		status = UpscalerStatus::Ready;
+		last_error.clear();
+		diag_trace("dlss", L"D3D12 run: ok");
+	}
+	return ok;
+}
+
+bool NgxRuntimeD3D12::evaluate_inputs(ID3D12GraphicsCommandList *cmd, ID3D12Resource *in_color,
+	ID3D12Resource *depth, ID3D12Resource *motion_vectors, ID3D12Resource *bias_mask,
+	float jitter_u, float jitter_v)
+{
+
+	ID3D12Resource *depth_input = depth;
+	if (depth_scratch != nullptr && depth != nullptr) {
+		barrier12(cmd, depth_scratch, kNgxSrvState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+		if (blit_.draw_fullscreen(device, cmd, depth,
+				depth_scratch, DXGI_FORMAT_R32_FLOAT, render_width, render_height,
+				0.0f, 0u, jitter_u, jitter_v))
+			depth_input = depth_scratch;
+		else
+			depth_input = nullptr;
+		barrier12(cmd, depth_scratch, D3D12_RESOURCE_STATE_RENDER_TARGET, kNgxSrvState);
+	} else if (depth_scratch != nullptr) {
+		const float far_plane = cfg.depth_inverted ? 0.0f : 1.0f;
+		const float flat[4] = { far_plane, far_plane, far_plane, far_plane };
+		barrier12(cmd, depth_scratch, kNgxSrvState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+		if (blit_.clear(device, cmd, depth_scratch, DXGI_FORMAT_R32_FLOAT, flat))
+			depth_input = depth_scratch;
+		barrier12(cmd, depth_scratch, D3D12_RESOURCE_STATE_RENDER_TARGET, kNgxSrvState);
+	}
+
+	ID3D12Resource *bias_input = bias_mask;
+	if (bias_input != nullptr && bias_scratch != nullptr) {
+		barrier12(cmd, bias_scratch, kNgxSrvState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+		if (blit_.draw_fullscreen(device, cmd, bias_input,
+				bias_scratch, DXGI_FORMAT_R8_UNORM, render_width, render_height,
+				0.0f, 0u, jitter_u, jitter_v))
+			bias_input = bias_scratch;
+		else
+			bias_input = nullptr;
+		barrier12(cmd, bias_scratch, D3D12_RESOURCE_STATE_RENDER_TARGET, kNgxSrvState);
+	}
+
+	diag_trace("dlss", std::wstring(log_tag) + L"run: EvaluateFeature");
+	barrier12(cmd, output_tex, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+	NVSDK_NGX_Parameter *eval_params = nullptr;
+	if (NVSDK_NGX_FAILED(api->allocate_parameters(&eval_params)) || eval_params == nullptr)
+		eval_params = reinterpret_cast<NVSDK_NGX_Parameter *>(params);
+
+	NVSDK_NGX_D3D12_DLSS_Eval_Params eval{};
+	ngx_dlss::fill_dlss_eval_scalars(*this, eval);
+	eval.Feature.pInColor = in_color;
+	eval.Feature.pInOutput = output_tex;
+	eval.pInDepth = depth_input;
+	eval.pInMotionVectors = motion_vectors;
+	eval.pInBiasCurrentColorMask = bias_input;
+
+	unsigned long seh_code = 0;
+	const NVSDK_NGX_Result er = evaluate_dlss_guarded(*api, cmd,
+		reinterpret_cast<NVSDK_NGX_Handle *>(feature_handle), eval_params, &eval, &seh_code);
+	++eval_count;
+	if (eval_params != params && eval_params != nullptr)
+		api->destroy_parameters(eval_params);
+
+	barrier12(cmd, output_tex, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+	if (seh_code != 0) {
+		crashed = true;
+		status = UpscalerStatus::EvaluateFailed;
+		wchar_t buf[128]{};
+		_snwprintf_s(buf, _TRUNCATE, L"D3D12 EvaluateFeature raised exception 0x%08lX - DLSS disabled for this session", seh_code);
+		last_error = buf;
+		diag_error("dlss", buf);
+		return false;
+	}
+	if (NVSDK_NGX_FAILED(er)) {
+		status = UpscalerStatus::EvaluateFailed;
+		last_error = ngx_format_result(L"D3D12 EvaluateFeature failed", er);
+		diag_error("dlss", last_error);
+		return false;
+	}
+	return true;
+}
+
+}
