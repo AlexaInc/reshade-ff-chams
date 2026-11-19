@@ -56,14 +56,23 @@ jobs:
             git -C aeonsr remote add origin "https://x-access-token:${{ secrets.AEONSR_PUSH_TOKEN }}@github.com/$env:AEONSR_REPO.git"
           }
 
-      - name: Submodules (ReShade, Vulkan headers, DLSS, XeSS, FidelityFX)
+      # The snapshot is a plain copy, so there are no gitlinks to update: the
+      # dependencies are cloned explicitly here (same set upstream uses).
+      - name: Dependencies (ReShade, Vulkan headers, DLSS, XeSS, FidelityFX)
         shell: pwsh
         working-directory: aeonsr
         run: |
-          git submodule update --init --depth 1 external/reshade external/Vulkan-Headers external/DLSS external/xess
+          git clone --depth 1 https://github.com/crosire/reshade.git external/reshade
           git -C external/reshade submodule update --init --depth 1 deps/imgui deps/minhook deps/spirv deps/stb deps/dds
-          # FidelityFX SDK is large; only the kit headers + signed binaries are needed.
-          git submodule update --init --depth 1 external/FidelityFX-SDK
+          git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git external/Vulkan-Headers
+          git clone --depth 1 https://github.com/NVIDIA/DLSS.git external/DLSS
+          git clone --depth 1 https://github.com/intel/xess.git external/xess
+          # FidelityFX SDK is large: only the kit headers, signed binaries and
+          # the licence are needed, so fetch with a sparse, blobless checkout.
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK.git external/FidelityFX-SDK
+          git -C external/FidelityFX-SDK sparse-checkout set Kits/FidelityFX/signedbin Kits/FidelityFX/api/include Kits/FidelityFX/upscalers/include Kits/FidelityFX/framegeneration/include docs
+          Write-Host "--- external ---"
+          Get-ChildItem external | Select-Object Name | Out-String | Write-Host
 
       # The upstream layout expects a few lifted header trees that its own
       # packaging step creates (third_party/...). The fork only ships sources, so
