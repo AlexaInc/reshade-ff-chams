@@ -422,7 +422,7 @@ namespace reshade
 
 		bool _show_splash = true;
 		bool _show_overlay = false;
-		unsigned int _show_fps = 2;
+		unsigned int _show_fps = 1; // fix: was 2 (only with overlay) -> 1 (always) so turned on FPS actually shows
 		unsigned int _show_clock = false;
 		unsigned int _show_frametime = false;
 		unsigned int _show_preset_name = false;
@@ -485,6 +485,16 @@ namespace reshade
 		std::filesystem::path _file_selection_path;
 		float _fps_col[4] = { 1.0f, 1.0f, 0.784314f, 1.0f };
 		float _fps_scale = 1.0f;
+		// FPS counter background plate (stage 104)
+		//   _fps_bg: 0 = off (text straight on the image), 1 = solid plate,
+		//            2 = blurred plate (the plate colour is drawn, then the
+		//            image behind it is left to the game - "blur" widens the
+		//            plate and softens its edge, which reads as frosted glass
+		//            on every API without needing a copy of the backbuffer).
+		unsigned int _fps_bg = 0;
+		float _fps_bg_col[4] = { 0.043f, 0.055f, 0.067f, 0.72f }; // #0B0E11 / 72%
+		float _fps_bg_round = 8.0f;   // px, corner radius at 1x
+		float _fps_bg_pad[2] = { 10.0f, 6.0f }; // px, horizontal / vertical padding
 		float _hdr_overlay_brightness = 203.f; // HDR reference white as per BT.2408
 		api::color_space _hdr_overlay_overwrite_color_space = api::color_space::unknown;
 		bool  _show_force_load_effects_button = true;

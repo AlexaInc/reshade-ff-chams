@@ -15,7 +15,6 @@
 #include "input.hpp"
 #include "imgui_widgets.hpp"
 #include "chams.hpp" // chams mod
-#include "chams_capture.hpp"
 #include "localization.hpp"
 #include "platform_utils.hpp"
 #include "fonts/forkawesome.inl"
@@ -337,6 +336,10 @@ void reshade::runtime::load_config_gui(const ini_file &config)
 	if (!config.get("STYLE", "FontScale", _imgui_context->Style.FontScaleMain) && _font_size == 13.0f)
 		_imgui_context->Style.FontScaleMain = 0.0f;
 	config.get("STYLE", "FPSScale", _fps_scale);
+	config.get("OVERLAY", "FPSBackground", _fps_bg);
+	config.get("STYLE", "ColFPSBackground", _fps_bg_col);
+	config.get("STYLE", "FPSBackgroundRounding", _fps_bg_round);
+	config.get("STYLE", "FPSBackgroundPadding", _fps_bg_pad);
 	config.get("STYLE", "FrameRounding", imgui_style.FrameRounding);
 	config.get("STYLE", "GrabRounding", imgui_style.GrabRounding);
 	config.get("STYLE", "LatinFont", _latin_font_path);
@@ -438,6 +441,10 @@ void reshade::runtime::save_config_gui(ini_file &config) const
 	config.set("STYLE", "FontSize", _font_size);
 	config.set("STYLE", "FontScale", _imgui_context->Style.FontScaleMain);
 	config.set("STYLE", "FPSScale", _fps_scale);
+	config.set("OVERLAY", "FPSBackground", _fps_bg);
+	config.set("STYLE", "ColFPSBackground", _fps_bg_col);
+	config.set("STYLE", "FPSBackgroundRounding", _fps_bg_round);
+	config.set("STYLE", "FPSBackgroundPadding", _fps_bg_pad);
 	config.set("STYLE", "FrameRounding", imgui_style.FrameRounding);
 	config.set("STYLE", "GrabRounding", imgui_style.GrabRounding);
 	config.set("STYLE", "LatinFont", _latin_font_path);
@@ -825,8 +832,7 @@ void reshade::runtime::draw_gui()
 	const bool show_fps = _show_fps == 1 || (_show_overlay && _show_fps > 1);
 	const bool show_frametime = _show_frametime == 1 || (_show_overlay && _show_frametime > 1);
 	const bool show_preset_name = _show_preset_name == 1 || (_show_overlay && _show_preset_name > 1);
-	const bool capture_active = chams::capture::runtime_enabled();
-	bool show_statistics_window = show_clock || show_fps || show_frametime || show_preset_name || capture_active;
+	bool show_statistics_window = show_clock || show_fps || show_frametime || show_preset_name;
 #if RESHADE_ADDON
 	for (const addon_info &info : addon_loaded_info)
 	{
@@ -1226,6 +1232,71 @@ void reshade::runtime::draw_gui()
 		if (_fps_pos > 1)
 			fps_window_pos.y = imgui_io.DisplaySize.y - fps_window_size.y - 5;
 
+		// ---------------------------------------------------------------
+		// background plate for the counter (stage 104)
+		// The plate is drawn in its own decoration-less window, sized from the
+		// measured OSD text, so the text layout never has to change for it.
+		//   1 = solid  : rounded rectangle filled with _fps_bg_col
+		//   2 = frosted: same rectangle plus two soft outer rings, which reads
+		//                as blur on top of the game image without copying the
+		//                backbuffer (works on every API ReShade supports)
+		// ---------------------------------------------------------------
+		if (_fps_bg != 0)
+		{
+			// the OSD window rect already covers the text (right aligned text still
+			// lives inside that rect), so the plate is simply that rect grown by
+			// the configured padding and shrunk by the window padding.
+			const ImVec2 style_pad = _imgui_context->Style.WindowPadding;
+			float plate_w = std::max(fps_window_size.x - style_pad.x * 2.0f + _fps_bg_pad[0] * 2.0f, 8.0f);
+			float plate_h = std::max(fps_window_size.y - style_pad.y * 2.0f + _fps_bg_pad[1] * 2.0f, 8.0f);
+
+			ImVec2 plate_pos = fps_window_pos;
+			// keep the plate inside the viewport even for the right / bottom corners
+			plate_pos.x = std::max(plate_pos.x + style_pad.x - _fps_bg_pad[0], 0.0f);
+			plate_pos.y = std::max(plate_pos.y + style_pad.y - _fps_bg_pad[1], 0.0f);
+			if (_fps_pos % 2)
+				plate_pos.x = std::max(fps_window_pos.x + fps_window_size.x - style_pad.x - plate_w + _fps_bg_pad[0], 0.0f);
+			if (_fps_pos > 1)
+				plate_pos.y = std::max(fps_window_pos.y + fps_window_size.y - style_pad.y - plate_h + _fps_bg_pad[1], 0.0f);
+
+			ImGui::SetNextWindowPos(plate_pos);
+			ImGui::SetNextWindowSize(ImVec2(plate_w, plate_h));
+			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+			ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
+			ImGui::Begin("OSD background", nullptr,
+				ImGuiWindowFlags_NoDecoration |
+				ImGuiWindowFlags_NoNav |
+				ImGuiWindowFlags_NoMove |
+				ImGuiWindowFlags_NoInputs |
+				ImGuiWindowFlags_NoSavedSettings |
+				ImGuiWindowFlags_NoDocking |
+				ImGuiWindowFlags_NoFocusOnAppearing |
+				ImGuiWindowFlags_NoBackground);
+
+			ImDrawList *const plate_draw = ImGui::GetWindowDrawList();
+			const ImVec2 a = ImGui::GetWindowPos();
+			const ImVec2 b = a + ImVec2(plate_w, plate_h);
+			const ImU32 base = ImGui::GetColorU32(ImVec4(_fps_bg_col[0], _fps_bg_col[1], _fps_bg_col[2], _fps_bg_col[3]));
+			const float rounding = _fps_bg_round;
+
+			if (_fps_bg >= 2) // frosted: soft rings fading outwards
+			{
+				for (int ring = 6; ring >= 1; --ring)
+				{
+					const float grow = static_cast<float>(ring) * 2.0f;
+					const ImU32 col = ImGui::GetColorU32(ImVec4(_fps_bg_col[0], _fps_bg_col[1], _fps_bg_col[2], _fps_bg_col[3] * (0.10f / static_cast<float>(ring))));
+					plate_draw->AddRectFilled(a - ImVec2(grow, grow), b + ImVec2(grow, grow), col, rounding + grow);
+				}
+			}
+			plate_draw->AddRectFilled(a, b, base, rounding);
+			if (_fps_bg_col[3] > 0.0f)
+				plate_draw->AddRect(a, b, ImGui::GetColorU32(ImVec4(1, 1, 1, 0.05f * _fps_bg_col[3])), rounding);
+
+			ImGui::End();
+			ImGui::PopStyleColor();
+			ImGui::PopStyleVar();
+		}
+
 		ImGui::SetNextWindowPos(fps_window_pos);
 		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(_fps_col[0], _fps_col[1], _fps_col[2], _fps_col[3]));
 		ImGui::Begin("OSD", nullptr,
@@ -1289,14 +1360,6 @@ void reshade::runtime::draw_gui()
 			ImGui::TextUnformatted(preset_name.c_str(), preset_name.c_str() + preset_name.size());
 		}
 
-		if (capture_active)
-		{
-			const auto capture_status = chams::capture::runtime_status();
-			const bool bad = capture_status.io_error || capture_status.dropped != 0;
-			ImGui::TextColored(bad ? ImVec4(1, 0.25f, 0.2f, 1) : ImVec4(1, 0.8f, 0.2f, 1),
-				bad ? "CHAMS TRACKING: LOSS/ERROR" : "CHAMS TRACKING ACTIVE");
-			if (bad) ImGui::Text("Dropped: %llu", static_cast<unsigned long long>(capture_status.dropped));
-		}
 		ImGui::Dummy(ImVec2(200, 0)); // Force a minimum window width
 
 		ImGui::PopFont();
@@ -2515,6 +2578,14 @@ void reshade::runtime::draw_gui_settings()
 
 			modified |= ImGui::SliderFloat(_("OSD text size"), &_fps_scale, 0.2f, 2.5f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 			modified |= ImGui::ColorEdit4(_("OSD text color"), _fps_col, ImGuiColorEditFlags_AlphaBar);
+			// FPS counter background plate (stage 104, also in the Chams menu panel 03)
+			modified |= ImGui::Combo(_("OSD background"), reinterpret_cast<int *>(&_fps_bg), "Off\0Solid\0Frosted\0");
+			if (_fps_bg != 0)
+			{
+				modified |= ImGui::ColorEdit4(_("OSD background color"), _fps_bg_col, ImGuiColorEditFlags_AlphaBar);
+				modified |= ImGui::SliderFloat(_("OSD background corner radius"), &_fps_bg_round, 0.0f, 24.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+				modified |= ImGui::SliderFloat2(_("OSD background padding"), _fps_bg_pad, 0.0f, 32.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+			}
 
 			std::string fps_pos_items = _("Top left\nTop right\nBottom left\nBottom right\n");
 			std::replace(fps_pos_items.begin(), fps_pos_items.end(), '\n', '\0');
