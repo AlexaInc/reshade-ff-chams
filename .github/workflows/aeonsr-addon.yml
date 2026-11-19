@@ -181,7 +181,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path out, stage/dlls, stage/addon, stage/package | Out-Null
-          $addon = Get-ChildItem -Recurse aeonsr/build -Include AeonSR.addon64 -File | Select-Object -First 1
+          $addon = Get-ChildItem -Recurse aeonsr/build -Include AlexaIncEnhancer.addon64, AeonSR.addon64 -File | Select-Object -First 1
           if (-not $addon) { $addon = Get-ChildItem -Recurse aeonsr/build -Include *.addon64 -File | Select-Object -First 1 }
           if (-not $addon) { throw "the .addon64 was not produced" }
           Copy-Item $addon.FullName "out/AlexaIncEnhancer.addon64"
