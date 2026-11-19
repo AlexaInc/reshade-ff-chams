@@ -1,51 +1,70 @@
-## Graphics Enhancer by **AlexaInc** — v1.3.2 (Aeon SR fork)
+# AlexaInc Enhancer v1.0.0
 
-Modded build of [Aeon SR](https://github.com/BarbatosAWLS/AeonSR) by **Barbatos AWLS** (MIT),
-rebranded and extended by **AlexaInc**.
+ReShade add-on that brings **DLSS / FSR / XeSS temporal anti-aliasing, frame generation
+and DLSS neural rendering** to games that never shipped them.
 
-### What is inside
+Fork of [Aeon SR](https://github.com/BarbatosAWLS/AeonSR) by **Barbatos AWLS** (MIT),
+rebranded and extended by **AlexaInc**. Engine copyright stays with the original author;
+the AlexaInc name, logo and packaging are the fork's.
 
-| File | What it is |
-| --- | --- |
-| `AeonSR.addon64` | The 64-bit add-on. This is the mod itself. |
-| `AeonSR.addonfx` | Effect-syntax definition used by the ReShade overlay. |
-| `alexainc_logo.png` | AlexaInc mark used in the overlay header. |
+---
 
-### Install
+## Which download do I need?
 
-1. Install **ReShade with add-on support** for your game (this DLL is the *ReShade* half).
-2. Create the folder `reshade-shaders\Addons` next to the game executable if it does not exist.
-3. Copy `AeonSR.addon64` and `AeonSR.addonfx` there.
-4. Start the game, press **Home** (or your ReShade overlay key), open the **Add-ons** tab,
-   select **Aeon SR**.
-5. The **Chams** menu (by AlexaInc) appears as its own tab when the Chams add-on is also installed.
+| Package | Contents | Use it when |
+| --- | --- | --- |
+| **`AlexaIncEnhancer-v1.0.0-plugins.zip`** | `AlexaIncEnhancer.addon64`, `AlexaIncEnhancer.addonfx` | You already have the vendor DLLs (DLSS / FSR / XeSS) beside your game, or you only want the upscaler that ships inside the add-on |
+| **`AlexaIncEnhancer-v1.0.0-dlls.zip`** | every vendor runtime DLL only | You just need to drop the runtimes next to a game that already has the add-on |
+| **`AlexaIncEnhancer-v1.0.0-full.zip`** | add-on + effect file + **all DLLs** + logo + this readme | First install. Unzip, copy everything into `reshade-shaders\Addons` (and the DLLs into the game folder if the game needs them there) |
 
-### Vendor runtimes (DLSS / FSR / XeSS)
+A bare `AlexaIncEnhancer.addon64` is attached to the release as well, for updating
+without touching your DLLs.
 
-The upscalers need the vendor DLLs at runtime. They are **not** in this release because
-NVIDIA, AMD and Intel licences do not allow redistributing them from source builds:
+### DLLs inside `-dlls.zip` and `-full.zip`
 
-* `nvngx_dlss.dll`, `nvngx_dlssg.dll` — from an NVIDIA DLSS package, drop next to the game exe
-  (or let AeonSR copy them from its `runtime\` folder, as upstream does)
-* `amd_fidelityfx_upscaler_dx12.dll`, `amd_fidelityfx_framegeneration_dx12.dll`,
-  `amd_fidelityfx_loader_dx12.dll` — from the AMD FidelityFX SDK
-* `libxess.dll`, `libxess_dx11.dll`, `libxess_fg.dll`, `libxell.dll` — from the Intel XeSS SDK
+| DLL | Provides | Vendor |
+| --- | --- | --- |
+| `nvngx_dlss.dll` | DLSS Super Resolution | NVIDIA |
+| `nvngx_dlssg.dll` | DLSS Frame Generation | NVIDIA |
+| `nvngx_dlssnr.dll` | **DLSS Neural Rendering** (310.8 SF v2) | NVIDIA |
+| `libxess.dll` | XeSS (DX12) | Intel |
+| `libxess_dx11.dll` | XeSS (DX11) | Intel |
+| `libxess_fg.dll` | XeSS Frame Generation | Intel |
+| `libxell.dll` | XeLL low-latency | Intel |
+| `amd_fidelityfx_upscaler_dx12.dll` | FSR 3.1 / FSR 4 upscaling | AMD |
+| `amd_fidelityfx_framegeneration_dx12.dll` | FSR frame generation | AMD |
+| `amd_fidelityfx_loader_dx12.dll` | FidelityFX loader used by the two above | AMD |
 
-If a runtime is missing, Aeon SR falls back to its own temporal upscaler, so the add-on
-still loads and still anti-aliases.
+Every one of these is **proprietary vendor software**, included under the vendor's own
+licence (see `THIRD-PARTY-NOTICES.md` in the repo). They are **not** part of the MIT
+licensed Aeon SR engine, and they are not modified here.
 
-### What this fork changes vs. upstream Aeon SR
+---
 
-* AlexaInc Graphics Enhancer branding: overlay header, dark catalog UI, mint `#94E8C1` accent
-* FPS counter defaults to **always on** (upstream only shows it with the overlay open)
-* **FPS counter background** — solid or frosted plate behind the counter, with colour,
-  opacity, corner radius and padding (`[OVERLAY] FPSBackground`, `[STYLE] ColFPSBackground`)
-* Docs rebranded: `docs/GRAPHICS_ENHANCER.md`
-* No vendor binaries redistributed — same runtime policy as upstream
+## Install
 
-### Credits
+1. Install **ReShade with add-on support** for the game.
+2. Copy `AlexaIncEnhancer.addon64` and `AlexaIncEnhancer.addonfx` into
+   `…\reshade-shaders\Addons\` next to the game executable.
+3. If you use the full package, copy the vendor DLLs to the folder the add-on expects —
+   the simplest is `…\reshade-shaders\Addons\` together with the add-on; the add-on also
+   looks beside the game executable.
+4. Start the game, open the ReShade overlay (**Home** by default), go to **Add-ons**.
+   The panel is called **AlexaInc Enhancer** and its overlay shows the AlexaInc logo.
 
-* Aeon SR engine: **Barbatos AWLS** — MIT
-* ReShade: **crosire** — BSD 3-Clause
-* DLSS / FidelityFX / XeSS: NVIDIA / AMD / Intel, under their own licences
-* Fork, branding and the Chams menu: **hazu @ alexainc**
+## What this build is
+
+* Same Aeon SR 1.3.2 engine, renamed and rebranded to **AlexaInc Enhancer v1.0.0**
+* IP geolocation of the engine unchanged — if a game does not work with upstream Aeon SR,
+  it will not work here either
+* FPS counter on by default
+* **FPS counter background**: solid or frosted plate, colour, opacity, corner radius and
+  padding (`[OVERLAY] FPSBackground`, `[STYLE] ColFPSBackground`)
+* Logo: `AlexaInc.svg` / `AlexaInc.ico` / `alexainc_logo.png` in this package
+
+## Credits
+
+* Aeon SR engine — **Barbatos AWLS**, MIT
+* ReShade — **crosire**, BSD 3-Clause
+* DLSS, FidelityFX, XeSS — NVIDIA / AMD / Intel
+* Rebrand, packaging, Chams menu — **hazu @ alexainc**

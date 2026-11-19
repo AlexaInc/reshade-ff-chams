@@ -16,7 +16,7 @@ on:
       version:
         description: "Version label used in the release tag (e.g. 1.3.2)"
         required: true
-        default: "1.3.2"
+        default: "1.0.0"
       source:
         description: "Where the AeonSR sources come from"
         type: choice
@@ -161,17 +161,69 @@ jobs:
           Get-ChildItem -Recurse -Directory third_party -ErrorAction SilentlyContinue | Select-Object FullName | Out-String | Write-Host
           Get-ChildItem -Recurse -Directory external -Depth 2 -ErrorAction SilentlyContinue | Select-Object FullName | Out-String | Write-Host
 
+      # The DLSS Neural Rendering runtime is not in any public SDK, so it comes
+      # from the signed release asset of the fork (165 MB, never in git).
+      - name: DLSS Neural Rendering runtime
+        shell: pwsh
+        working-directory: aeonsr
+        run: |
+          New-Item -ItemType Directory -Force -Path third_party/dlssnr | Out-Null
+          $dst = "third_party/dlssnr/nvngx_dlssnr.dll"
+          if (-not (Test-Path $dst)) {
+            gh release download dlssnr-310.8.SF-v2 --repo $env:AEONSR_REPO --pattern nvngx_dlssnr.dll --dir third_party/dlssnr
+          }
+          if (-not (Test-Path $dst)) { throw "nvngx_dlssnr.dll could not be fetched" }
+          Get-Item $dst | Select-Object Name, Length | Format-Table | Out-String | Write-Host
+        env:
+          GH_TOKEN: ${{ secrets.AEONSR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+
       - name: Collect artifacts
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path out | Out-Null
-          $addon = Get-ChildItem -Recurse aeonsr/build -Include AeonSR.addon64, AeonSR.addon32 -File | Select-Object -First 5
-          if (-not $addon) { throw "AeonSR.addon64 was not produced" }
-          $addon | ForEach-Object { Copy-Item $_.FullName out/ }
-          Copy-Item aeonsr/package/AeonSR.addonfx out/ -ErrorAction SilentlyContinue
-          Copy-Item aeonsr/package/AeonSR.svg out/ -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path out, stage/dlls, stage/addon, stage/package | Out-Null
+          $addon = Get-ChildItem -Recurse aeonsr/build -Include AeonSR.addon64 -File | Select-Object -First 1
+          if (-not $addon) { $addon = Get-ChildItem -Recurse aeonsr/build -Include *.addon64 -File | Select-Object -First 1 }
+          if (-not $addon) { throw "the .addon64 was not produced" }
+          Copy-Item $addon.FullName "out/AlexaIncEnhancer.addon64"
+          Copy-Item aeonsr/package/AeonSR.addonfx "out/AlexaIncEnhancer.addonfx" -ErrorAction SilentlyContinue
+          Copy-Item aeonsr/package/AlexaInc.svg out/ -ErrorAction SilentlyContinue
+          Copy-Item aeonsr/package/AlexaInc.ico out/ -ErrorAction SilentlyContinue
           Copy-Item aeonsr/res/alexainc_logo.png out/ -ErrorAction SilentlyContinue
-          Copy-Item aeonsr/README.md out/README-AeonSR-Graphics-Enhancer.md -ErrorAction SilentlyContinue
+
+          # --- vendor runtimes (every DLL the add-on can load) -------------
+          $runtime = @(
+            "aeonsr/external/DLSS/lib/Windows_x86_64/rel/nvngx_dlss.dll",
+            "aeonsr/external/DLSS/lib/Windows_x86_64/rel/nvngx_dlssg.dll",
+            "aeonsr/external/xess/bin/libxess.dll",
+            "aeonsr/external/xess/bin/libxess_dx11.dll",
+            "aeonsr/external/xess/bin/libxess_fg.dll",
+            "aeonsr/external/xess/bin/libxell.dll",
+            "aeonsr/external/FidelityFX-SDK/Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_dx12.dll",
+            "aeonsr/external/FidelityFX-SDK/Kits/FidelityFX/signedbin/amd_fidelityfx_framegeneration_dx12.dll",
+            "aeonsr/external/FidelityFX-SDK/Kits/FidelityFX/signedbin/amd_fidelityfx_loader_dx12.dll",
+            "aeonsr/third_party/dlssnr/nvngx_dlssnr.dll")
+          $missing = @()
+          foreach ($f in $runtime) {
+            if (Test-Path $f) { Copy-Item $f "stage/dlls/" } else { $missing += $f }
+          }
+          if ($missing.Count -gt 0) { Write-Host "MISSING runtime files:"; $missing | ForEach-Object { Write-Host "  $_" } }
+
+          # --- plugins only (add-on + effect definition, no DLLs) ----------
+          Copy-Item out/AlexaIncEnhancer.addon64 stage/addon/
+          Copy-Item out/AlexaIncEnhancer.addonfx stage/addon/ -ErrorAction SilentlyContinue
+
+          # --- full package: plugins + every DLL + logo + readme -----------
+          Copy-Item out/AlexaIncEnhancer.addon64 stage/package/
+          Copy-Item out/AlexaIncEnhancer.addonfx stage/package/ -ErrorAction SilentlyContinue
+          Copy-Item out/AlexaInc.svg stage/package/ -ErrorAction SilentlyContinue
+          Copy-Item out/AlexaInc.ico stage/package/ -ErrorAction SilentlyContinue
+          Copy-Item out/alexainc_logo.png stage/package/ -ErrorAction SilentlyContinue
+          Copy-Item ci/.github/RELEASE_AEONSR.md stage/package/README.md -ErrorAction SilentlyContinue
+          Copy-Item stage/dlls/* stage/package/ -ErrorAction SilentlyContinue
+
+          Compress-Archive -Path "stage/dlls/*" -DestinationPath "out/AlexaIncEnhancer-v$env:VERSION-dlls.zip" -Force
+          Compress-Archive -Path "stage/addon/*" -DestinationPath "out/AlexaIncEnhancer-v$env:VERSION-plugins.zip" -Force
+          Compress-Archive -Path "stage/package/*" -DestinationPath "out/AlexaIncEnhancer-v$env:VERSION-full.zip" -Force
           Get-ChildItem out | Select-Object Name, Length | Format-Table | Out-String | Write-Host
 
       - name: Upload build artifact
@@ -189,18 +241,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.AEONSR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
-          $tag = "graphics-enhancer-v$env:VERSION"
-          $files = (Get-ChildItem out/*.addon64).FullName + (Get-ChildItem out/*.addonfx).FullName
+          $tag = "alexainc-enhancer-v$env:VERSION"
+          $title = "AlexaInc Enhancer v$env:VERSION"
+          $files = Get-ChildItem out/*.zip | ForEach-Object { $_.FullName }
+          $files += (Get-ChildItem out/*.addon64).FullName
           gh release view $tag --repo $env:AEONSR_REPO *> $null
           if ($LASTEXITCODE -eq 0) {
             Write-Host "Release $tag exists: refreshing assets"
             gh release upload $tag @files --repo $env:AEONSR_REPO --clobber
-            gh release edit $tag --repo $env:AEONSR_REPO --notes-file ci/.github/RELEASE_AEONSR.md
+            gh release edit $tag --repo $env:AEONSR_REPO --title $title --notes-file ci/.github/RELEASE_AEONSR.md
           } else {
-            Write-Host "Creating release $tag"
             gh release create $tag @files `
               --repo $env:AEONSR_REPO `
-              --title "Graphics Enhancer by AlexaInc v$env:VERSION (Aeon SR fork)" `
+              --title $title `
               --notes-file ci/.github/RELEASE_AEONSR.md `
               --latest
           }
