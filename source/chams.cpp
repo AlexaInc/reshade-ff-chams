@@ -55,15 +55,19 @@ namespace reshade::chams
 	}
 
 	// The cursor lives in the menu unit (ImGui); the draw unit reads it here.
-	std::atomic<float> g_radar_cursor_x{0.0f};
-	std::atomic<float> g_radar_cursor_y{0.0f};
-	std::atomic<bool>  g_radar_cursor_valid{false};
+	// Defined inside chams_radar so the declaration in chams_radar_draw.inl binds.
+	namespace chams_radar
+	{
+		std::atomic<float> g_radar_cursor_x{0.0f};
+		std::atomic<float> g_radar_cursor_y{0.0f};
+		std::atomic<bool>  g_radar_cursor_valid{false};
+	}
 
 	void radar_publish_cursor(float x, float y, bool valid)
 	{
-		g_radar_cursor_x.store(x, std::memory_order_relaxed);
-		g_radar_cursor_y.store(y, std::memory_order_relaxed);
-		g_radar_cursor_valid.store(valid, std::memory_order_relaxed);
+		chams_radar::g_radar_cursor_x.store(x, std::memory_order_relaxed);
+		chams_radar::g_radar_cursor_y.store(y, std::memory_order_relaxed);
+		chams_radar::g_radar_cursor_valid.store(valid, std::memory_order_relaxed);
 	}
 
 	// ======================= dump file ==================================
