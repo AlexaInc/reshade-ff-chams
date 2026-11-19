@@ -1233,69 +1233,24 @@ void reshade::runtime::draw_gui()
 			fps_window_pos.y = imgui_io.DisplaySize.y - fps_window_size.y - 5;
 
 		// ---------------------------------------------------------------
-		// background plate for the counter (stage 104)
-		// The plate is drawn in its own decoration-less window, sized from the
-		// measured OSD text, so the text layout never has to change for it.
-		//   1 = solid  : rounded rectangle filled with _fps_bg_col
-		//   2 = frosted: same rectangle plus two soft outer rings, which reads
-		//                as blur on top of the game image without copying the
-		//                backbuffer (works on every API ReShade supports)
+		// OSD: background plate + counter text in ONE window (stage 105)
+		//
+		// The plate used to be a second, separate ImGui window, which sits on top
+		// of the OSD window in draw order: as soon as the background was switched
+		// on it covered the counter and the numbers looked like an empty overlay.
+		// Now the plate is painted into the OSD's own draw list first, and the
+		// text is drawn after it, so text is always on top of its background.
+		//
+		//   1 = solid  : rounded plate filled with _fps_bg_col
+		//   2 = frosted: plate plus fading outer rings (no backbuffer copy needed,
+		//                so it behaves the same on every API ReShade supports)
+		//
+		// Size is derived from the text that is going to be drawn (not from the
+		// previous frame), so the plate cannot drift or clip the counter.
 		// ---------------------------------------------------------------
-		if (_fps_bg != 0)
-		{
-			// the OSD window rect already covers the text (right aligned text still
-			// lives inside that rect), so the plate is simply that rect grown by
-			// the configured padding and shrunk by the window padding.
-			const ImVec2 style_pad = _imgui_context->Style.WindowPadding;
-			float plate_w = std::max(fps_window_size.x - style_pad.x * 2.0f + _fps_bg_pad[0] * 2.0f, 8.0f);
-			float plate_h = std::max(fps_window_size.y - style_pad.y * 2.0f + _fps_bg_pad[1] * 2.0f, 8.0f);
-
-			ImVec2 plate_pos = fps_window_pos;
-			// keep the plate inside the viewport even for the right / bottom corners
-			plate_pos.x = std::max(plate_pos.x + style_pad.x - _fps_bg_pad[0], 0.0f);
-			plate_pos.y = std::max(plate_pos.y + style_pad.y - _fps_bg_pad[1], 0.0f);
-			if (_fps_pos % 2)
-				plate_pos.x = std::max(fps_window_pos.x + fps_window_size.x - style_pad.x - plate_w + _fps_bg_pad[0], 0.0f);
-			if (_fps_pos > 1)
-				plate_pos.y = std::max(fps_window_pos.y + fps_window_size.y - style_pad.y - plate_h + _fps_bg_pad[1], 0.0f);
-
-			ImGui::SetNextWindowPos(plate_pos);
-			ImGui::SetNextWindowSize(ImVec2(plate_w, plate_h));
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-			ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
-			ImGui::Begin("OSD background", nullptr,
-				ImGuiWindowFlags_NoDecoration |
-				ImGuiWindowFlags_NoNav |
-				ImGuiWindowFlags_NoMove |
-				ImGuiWindowFlags_NoInputs |
-				ImGuiWindowFlags_NoSavedSettings |
-				ImGuiWindowFlags_NoDocking |
-				ImGuiWindowFlags_NoFocusOnAppearing |
-				ImGuiWindowFlags_NoBackground);
-
-			ImDrawList *const plate_draw = ImGui::GetWindowDrawList();
-			const ImVec2 a = ImGui::GetWindowPos();
-			const ImVec2 b = a + ImVec2(plate_w, plate_h);
-			const ImU32 base = ImGui::GetColorU32(ImVec4(_fps_bg_col[0], _fps_bg_col[1], _fps_bg_col[2], _fps_bg_col[3]));
-			const float rounding = _fps_bg_round;
-
-			if (_fps_bg >= 2) // frosted: soft rings fading outwards
-			{
-				for (int ring = 6; ring >= 1; --ring)
-				{
-					const float grow = static_cast<float>(ring) * 2.0f;
-					const ImU32 col = ImGui::GetColorU32(ImVec4(_fps_bg_col[0], _fps_bg_col[1], _fps_bg_col[2], _fps_bg_col[3] * (0.10f / static_cast<float>(ring))));
-					plate_draw->AddRectFilled(a - ImVec2(grow, grow), b + ImVec2(grow, grow), col, rounding + grow);
-				}
-			}
-			plate_draw->AddRectFilled(a, b, base, rounding);
-			if (_fps_bg_col[3] > 0.0f)
-				plate_draw->AddRect(a, b, ImGui::GetColorU32(ImVec4(1, 1, 1, 0.05f * _fps_bg_col[3])), rounding);
-
-			ImGui::End();
-			ImGui::PopStyleColor();
-			ImGui::PopStyleVar();
-		}
+		const bool want_bg = _fps_bg != 0;
+		const ImVec2 style_pad = _imgui_context->Style.WindowPadding;
+		const ImVec2 plate_pad(std::max(_fps_bg_pad[0], style_pad.x), std::max(_fps_bg_pad[1], style_pad.y));
 
 		ImGui::SetNextWindowPos(fps_window_pos);
 		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(_fps_col[0], _fps_col[1], _fps_col[2], _fps_col[3]));
@@ -1308,59 +1263,97 @@ void reshade::runtime::draw_gui()
 			ImGuiWindowFlags_NoDocking |
 			ImGuiWindowFlags_NoFocusOnAppearing |
 			ImGuiWindowFlags_NoBackground |
-			ImGuiWindowFlags_AlwaysAutoResize);
+			(want_bg ? ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse : ImGuiWindowFlags_AlwaysAutoResize));
 
 		ImGui::PushFont(nullptr, _imgui_context->Style.FontSizeBase * _fps_scale);
 
-		const float content_width = ImGui::GetContentRegionAvail().x;
+		// the strings first, so the plate can be sized from them exactly
 		char temp[32];
-
+		char line_clock[32] = {}, line_fps[32] = {}, line_frame[32] = {};
+		std::string line_preset;
+		int line_count = 0;
 		if (show_clock)
 		{
 			const std::time_t t = std::chrono::system_clock::to_time_t(_current_time);
 			struct tm tm; localtime_s(&tm, &t);
-
-			int temp_size;
 			switch (_clock_format)
 			{
 			default:
 			case 0:
-				temp_size = ImFormatString(temp, IM_ARRAYSIZE(temp), "%02d:%02d", tm.tm_hour, tm.tm_min);
+				ImFormatString(line_clock, IM_ARRAYSIZE(line_clock), "%02d:%02d", tm.tm_hour, tm.tm_min);
 				break;
 			case 1:
-				temp_size = ImFormatString(temp, IM_ARRAYSIZE(temp), "%02d:%02d:%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
+				ImFormatString(line_clock, IM_ARRAYSIZE(line_clock), "%02d:%02d:%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
 				break;
 			case 2:
-				temp_size = ImFormatString(temp, IM_ARRAYSIZE(temp), "%.4d-%.2d-%.2d %02d:%02d:%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+				ImFormatString(line_clock, IM_ARRAYSIZE(line_clock), "%.4d-%.2d-%.2d %02d:%02d:%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
 				break;
 			}
-			if (_fps_pos % 2) // Align text to the right of the window
-				ImGui::SetCursorPosX(content_width - ImGui::CalcTextSize(temp, temp + temp_size).x + _imgui_context->Style.ItemSpacing.x);
-			ImGui::TextUnformatted(temp, temp + temp_size);
+			++line_count;
 		}
 		if (show_fps)
 		{
-			const int temp_size = ImFormatString(temp, IM_ARRAYSIZE(temp), "%.0f fps", imgui_io.Framerate);
-			if (_fps_pos % 2)
-				ImGui::SetCursorPosX(content_width - ImGui::CalcTextSize(temp, temp + temp_size).x + _imgui_context->Style.ItemSpacing.x);
-			ImGui::TextUnformatted(temp, temp + temp_size);
+			ImFormatString(line_fps, IM_ARRAYSIZE(line_fps), "%.0f fps", imgui_io.Framerate);
+			++line_count;
 		}
 		if (show_frametime)
 		{
-			const int temp_size = ImFormatString(temp, IM_ARRAYSIZE(temp), "%5.2f ms", 1000.0f / imgui_io.Framerate);
-			if (_fps_pos % 2)
-				ImGui::SetCursorPosX(content_width - ImGui::CalcTextSize(temp, temp + temp_size).x + _imgui_context->Style.ItemSpacing.x);
-			ImGui::TextUnformatted(temp, temp + temp_size);
+			ImFormatString(line_frame, IM_ARRAYSIZE(line_frame), "%5.2f ms", 1000.0f / imgui_io.Framerate);
+			++line_count;
 		}
 		if (show_preset_name)
 		{
-			const std::string preset_name = _current_preset_path.stem().u8string();
-			if (_fps_pos % 2)
-				ImGui::SetCursorPosX(content_width - ImGui::CalcTextSize(preset_name.c_str(), preset_name.c_str() + preset_name.size()).x + _imgui_context->Style.ItemSpacing.x);
-			ImGui::TextUnformatted(preset_name.c_str(), preset_name.c_str() + preset_name.size());
+			line_preset = _current_preset_path.stem().u8string();
+			++line_count;
 		}
 
-		ImGui::Dummy(ImVec2(200, 0)); // Force a minimum window width
+		float text_w = 0.0f;
+		if (*line_clock) text_w = std::max(text_w, ImGui::CalcTextSize(line_clock).x);
+		if (*line_fps)   text_w = std::max(text_w, ImGui::CalcTextSize(line_fps).x);
+		if (*line_frame) text_w = std::max(text_w, ImGui::CalcTextSize(line_frame).x);
+		if (!line_preset.empty()) text_w = std::max(text_w, ImGui::CalcTextSize(line_preset.c_str()).x);
+
+		if (want_bg)
+		{
+			// fixed size from the measured text + padding; the text is then drawn
+			// at exactly that padding, so nothing can be clipped or covered
+			const float line_h = ImGui::GetTextLineHeight();
+			const float gap = _imgui_context->Style.ItemSpacing.y;
+			const float want_w = text_w + plate_pad.x * 2.0f;
+			const float want_h = line_h * static_cast<float>(line_count > 0 ? line_count : 1) +
+				gap * static_cast<float>(line_count > 1 ? line_count - 1 : 0) + plate_pad.y * 2.0f;
+			ImGui::SetWindowSize(ImVec2(std::max(want_w, 24.0f), std::max(want_h, 18.0f)), ImGuiCond_Always);
+
+			ImDrawList *const plate_draw = ImGui::GetWindowDrawList();
+			const ImVec2 a = ImGui::GetWindowPos();
+			const ImVec2 b = a + ImGui::GetWindowSize();
+			const ImU32 base = ImGui::GetColorU32(ImVec4(_fps_bg_col[0], _fps_bg_col[1], _fps_bg_col[2], _fps_bg_col[3]));
+			const float rounding = _fps_bg_round;
+			if (_fps_bg >= 2) // frosted: soft rings fading outwards
+			{
+				for (int ring = 6; ring >= 1; --ring)
+				{
+					const float grow = static_cast<float>(ring) * 2.0f;
+					const ImU32 col = ImGui::GetColorU32(ImVec4(_fps_bg_col[0], _fps_bg_col[1], _fps_bg_col[2], _fps_bg_col[3] * (0.10f / static_cast<float>(ring))));
+					plate_draw->AddRectFilled(a - ImVec2(grow, grow), b + ImVec2(grow, grow), col, rounding + grow);
+				}
+			}
+			plate_draw->AddRectFilled(a, b, base, rounding);
+			plate_draw->AddRect(a, b, ImGui::GetColorU32(ImVec4(1, 1, 1, 0.05f * _fps_bg_col[3])), rounding);
+
+			ImGui::SetCursorPos(plate_pad); // text goes inside the plate
+		}
+
+		const float content_width = ImGui::GetContentRegionAvail().x;
+		if (*line_clock) { if (_fps_pos % 2) ImGui::SetCursorPosX(content_width - ImGui::CalcTextSize(line_clock).x); ImGui::TextUnformatted(line_clock); }
+		if (*line_fps)   { if (_fps_pos % 2) ImGui::SetCursorPosX(content_width - ImGui::CalcTextSize(line_fps).x);   ImGui::TextUnformatted(line_fps); }
+		if (*line_frame) { if (_fps_pos % 2) ImGui::SetCursorPosX(content_width - ImGui::CalcTextSize(line_frame).x); ImGui::TextUnformatted(line_frame); }
+		if (!line_preset.empty()) { if (_fps_pos % 2) ImGui::SetCursorPosX(content_width - ImGui::CalcTextSize(line_preset.c_str()).x); ImGui::TextUnformatted(line_preset.c_str()); }
+
+		// Minimum width: only while there is no plate (with a plate the size is
+		// explicit, so the dummy would only stretch it).
+		if (!want_bg)
+			ImGui::Dummy(ImVec2(200, 0));
 
 		ImGui::PopFont();
 
