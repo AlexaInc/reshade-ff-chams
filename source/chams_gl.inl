@@ -2075,16 +2075,14 @@ namespace chams_radar
 			return 0.0f;
 		return std::atan2(dx, -dz) - cam_yaw;
 	}
-}
-
-
 
 	// Forward declarations: the drawing half needs the overlay types (declared in
 	// chams_overlay.inl, included right after this block), so it is defined at the
-	// end of this file.
+	// end of this file. Inside the namespace, so the definitions match.
 	inline void sync_from_settings();
 	inline void editor_input(bool editor, int &active_corner, bool &marked);
 	inline void draw(bool marks, bool editor, int active_corner, bool track);
+}
 
 #include "chams_overlay.inl"
 
