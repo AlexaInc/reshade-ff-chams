@@ -200,7 +200,7 @@ void main() { o_colour = u_colour; }
 		GLboolean blend = GL_FALSE, depth = GL_FALSE, scissor = GL_FALSE;
 		GLint depth_func = GL_LESS;
 		GLboolean depth_mask = GL_TRUE, color_mask[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
-		GLboolean blend_src = GL_ONE, blend_dst = GL_ZERO;
+		GLint blend_src = GL_ONE, blend_dst = GL_ZERO;
 		GLint blend_eq = GL_FUNC_ADD;
 
 		radar_state_guard()
