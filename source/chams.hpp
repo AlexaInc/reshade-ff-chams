@@ -151,43 +151,139 @@ namespace reshade::chams
 		// ShowFPS (bool) + FPSPosition (string TopLeft/TopRight/BottomLeft/BottomRight)
 		bool  show_fps                = false;  // default OFF
 
-		// ---- minimap marks (stage 109) ---------------------------------
-		// One mark per detected character inside the minimap the user marked with
-		// the pentool. Calibration lives in chams.ini [RADAR]; see chams_radar.inl.
-		bool  radar_marks             = false;  // default OFF: calibrate first
+		// ---- radar (stage 110) ------------------------------------------
+		// A player-centred radar square drawn outside the game map, built from the
+		// matrices captured for the chams. 1:1 scale: size (pixels) / area (metres)
+		// is the same on x and z. Position is dragged in the menu only, so it is
+		// locked while the menu is closed.
+		bool  radar_marks             = false;  // default OFF
 		bool  radar_track             = true;   // direction tick from the last positions
-		bool  radar_editor            = false;  // pentool editor open
-		int   radar_corner            = 0;      // 0..3 while marking the corners
-		float radar_map_x[4]          = { 0.0f, 0.0f, 0.0f, 0.0f };
-		float radar_map_y[4]          = { 0.0f, 0.0f, 0.0f, 0.0f };
-		bool  radar_map_marked        = false;
-		float radar_radius            = 60.0f;  // half extent of the map, metres
-		float radar_yaw               = 0.0f;   // map orientation, radians
-		float radar_dot_colour[4]     = { 0.24f, 0.91f, 0.75f, 0.95f };
-		float radar_wall_colour[4]    = { 1.00f, 0.36f, 0.30f, 0.95f };
-		int   fps_position            = 0;      // 0 TopLeft 1 TopRight 2 BottomLeft 3 BottomRight default TopLeft
-		float fps_scale               = 1.0f;   // text scale (reuses runtime scale range)
-		float fps_color[4]            = { 1.0f, 1.0f, 0.784314f, 1.0f }; // matches ReShade FPSText
-	};
+		float radar_square_x          = 40.0f;  // top left corner, pixels
+		float radar_square_y          = 40.0f;
+		float radar_square_px         = 260.0f; // side length, pixels
+		float radar_area_m            = 120.0f; // metres across the square
+		float radar_yaw               = 0.0f;   // orientation, radians
+		float radar_dot_colour[4]     = { 0.24f, 0.91f, 0.75f, 0.95f };  // visible
+		float radar_wall_colour[4]    = { 1.00f, 0.36f, 0.30f, 0.95f };  // behind a wall
+		float radar_frame_colour[4]   = { 0.85f, 0.90f, 0.95f, 0.55f };  // square + centre ring
 
-	extern settings g_settings;
-	extern bool     g_overlay_open;
-	extern int      g_budget_left;
-	extern std::atomic<unsigned> g_frame_id;
-	// live minimap marks (stage 109): published by the draw unit, read by the menu
-	extern std::atomic<unsigned> g_radar_bodies;
-	unsigned radar_marks_now();
-	void radar_publish_cursor(float x, float y, bool valid);
+		// ---- stroke: 2D line around the silhouette (v2.3 algorithm) ------
+		bool  stroke                  = true;
+		int   stroke_open_size        = 4;                       // base px, open area (1..16)
+		int   stroke_through_size     = 4;                       // base px, behind walls / glue wall (1..16)
+		float stroke_through_color[3] = { 1.00f, 0.40f, 0.00f }; // through walls
+		bool  stroke_open             = true;
+		float stroke_open_color[3]    = { 1.00f, 0.95f, 0.35f }; // in plain sight
+		float stroke_alpha            = 0.90f;                   // strength
 
-	void dump_line(const char *text);   // append one line to %TEMP%\chams-dump.txt
-	const char *dump_path();            // full path of the dump file (UTF-8)
+		// ---- wireframe: classic 3D triangles-as-lines -------------------
+		bool  wire                    = false;
+		int   wire_size               = 1;                       // 1..8 px
+		float wire_through_color[3]   = { 1.00f, 1.00f, 1.00f };  // through walls
+		bool  wire_open               = true;
+		float wire_open_color[3]      = { 0.90f, 0.95f, 1.00f };
+		float wire_alpha              = 0.70f;
 
-	void begin_frame();      // called once per frame (wglSwapBuffers)
-	void render_overlay();   // composites the player mask on top of the finished frame
-	void export_mask_if_requested(); // diagnostic mask export POC (Stage 50A, flag-gated)
-	void capture_clean_frame(); // clean-frame capture POC (Stage 70, flag-gated)
-	void poll_hotkey();      // F8: master switch on/off
-	void load();
-	void ensure_loaded();  // apply saved settings before the first chams draw
-	void save();
-}
+		// ---- third person / debug ---------------------------------------
+		bool  hide_own                = true;   // no chams on my own character
+		float own_distance            = k_own_distance;
+		bool  dump                    = false;  // log character draws to %TEMP%
+		bool  dump_all                = false;  // log EVERY draw (even filtered ones)
+		// ---- renderer + detection ---------------------------------------
+		// 0 = Overlay (mask framebuffer, composited on top at the end of the
+		//     frame - nothing can hide it, not even the glue wall), 1 = Direct
+		//     (v3.0 per-draw passes, depth tested by the game scene).
+		// Direct is the default again: the overlay renderer needs a working
+		// framebuffer + scissor handling on the emulator's driver, and a bad
+		// composite means a black screen, which is not worth the risk by
+		// default. Turn it on in the menu when you want the "always on top" look.
+		int   render_mode             = 1;
+		// 0 strict / 1 wide / 2 skinned / 3 all
+		int   detect_mode             = 1;
+		bool  wide_match              = true;   // kept: mode 1 == old wide match
+		bool  through_walls           = true;   // walls / glue wall must not hide the chams
+		// ---- FPS counter (Stage 97) ----------------------------------------
+		// Default OFF per spec; position selectable four corners; persisted as
+		// ShowFPS (bool) + FPSPosition (string TopLeft/TopRight/BottomLeft/BottomRight)
+		bool  show_fps                = false;  // default OFF
+
+		// ---- stroke: 2D line around the silhouette (v2.3 algorithm) ------
+		bool  stroke                  = true;
+		int   stroke_open_size        = 4;                       // base px, open area (1..16)
+		int   stroke_through_size     = 4;                       // base px, behind walls / glue wall (1..16)
+		float stroke_through_color[3] = { 1.00f, 0.40f, 0.00f }; // through walls
+		bool  stroke_open             = true;
+		float stroke_open_color[3]    = { 1.00f, 0.95f, 0.35f }; // in plain sight
+		float stroke_alpha            = 0.90f;                   // strength
+
+		// ---- wireframe: classic 3D triangles-as-lines -------------------
+		bool  wire                    = false;
+		int   wire_size               = 1;                       // 1..8 px
+		float wire_through_color[3]   = { 1.00f, 1.00f, 1.00f };  // through walls
+		bool  wire_open               = true;
+		float wire_open_color[3]      = { 0.90f, 0.95f, 1.00f };
+		float wire_alpha              = 0.70f;
+
+		// ---- third person / debug ---------------------------------------
+		bool  hide_own                = true;   // no chams on my own character
+		float own_distance            = k_own_distance;
+		bool  dump                    = false;  // log character draws to %TEMP%
+		bool  dump_all                = false;  // log EVERY draw (even filtered ones)
+		// ---- renderer + detection ---------------------------------------
+		// 0 = Overlay (mask framebuffer, composited on top at the end of the
+		//     frame - nothing can hide it, not even the glue wall), 1 = Direct
+		//     (v3.0 per-draw passes, depth tested by the game scene).
+		// Direct is the default again: the overlay renderer needs a working
+		// framebuffer + scissor handling on the emulator's driver, and a bad
+		// composite means a black screen, which is not worth the risk by
+		// default. Turn it on in the menu when you want the "always on top" look.
+		int   render_mode             = 1;
+		// 0 strict / 1 wide / 2 skinned / 3 all
+		int   detect_mode             = 1;
+		bool  wide_match              = true;   // kept: mode 1 == old wide match
+		bool  through_walls           = true;   // walls / glue wall must not hide the chams
+		// ---- FPS counter (Stage 97) ----------------------------------------
+		// Default OFF per spec; position selectable four corners; persisted as
+		// ShowFPS (bool) + FPSPosition (string TopLeft/TopRight/BottomLeft/BottomRight)
+		bool  show_fps                = false;  // default OFF
+
+		// ---- stroke: 2D line around the silhouette (v2.3 algorithm) ------
+		bool  stroke                  = true;
+		int   stroke_open_size        = 4;                       // base px, open area (1..16)
+		int   stroke_through_size     = 4;                       // base px, behind walls / glue wall (1..16)
+		float stroke_through_color[3] = { 1.00f, 0.40f, 0.00f }; // through walls
+		bool  stroke_open             = true;
+		float stroke_open_color[3]    = { 1.00f, 0.95f, 0.35f }; // in plain sight
+		float stroke_alpha            = 0.90f;                   // strength
+
+		// ---- wireframe: classic 3D triangles-as-lines -------------------
+		bool  wire                    = false;
+		int   wire_size               = 1;                       // 1..8 px
+		float wire_through_color[3]   = { 1.00f, 1.00f, 1.00f };  // through walls
+		bool  wire_open               = true;
+		float wire_open_color[3]      = { 0.90f, 0.95f, 1.00f };
+		float wire_alpha              = 0.70f;
+
+		// ---- third person / debug ---------------------------------------
+		bool  hide_own                = true;   // no chams on my own character
+		float own_distance            = k_own_distance;
+		bool  dump                    = false;  // log character draws to %TEMP%
+		bool  dump_all                = false;  // log EVERY draw (even filtered ones)
+		// ---- renderer + detection ---------------------------------------
+		// 0 = Overlay (mask framebuffer, composited on top at the end of the
+		//     frame - nothing can hide it, not even the glue wall), 1 = Direct
+		//     (v3.0 per-draw passes, depth tested by the game scene).
+		// Direct is the default again: the overlay renderer needs a working
+		// framebuffer + scissor handling on the emulator's driver, and a bad
+		// composite means a black screen, which is not worth the risk by
+		// default. Turn it on in the menu when you want the "always on top" look.
+		int   render_mode             = 1;
+		// 0 strict / 1 wide / 2 skinned / 3 all
+		int   detect_mode             = 1;
+		bool  wide_match              = true;   // kept: mode 1 == old wide match
+		bool  through_walls           = true;   // walls / glue wall must not hide the chams
+		// ---- FPS counter (Stage 97) ----------------------------------------
+		// Default OFF per spec; position selectable four corners; persisted as
+		// ShowFPS (bool) + FPSPosition (string TopLeft/TopRight/BottomLeft/BottomRight)
+		bool  show_fps                = false;  // default OFF
+

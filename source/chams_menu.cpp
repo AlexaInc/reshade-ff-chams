@@ -806,47 +806,64 @@ void reshade::runtime::draw_gui_chams(){
   }
 
   // ================= 04b Minimap marks =================
-  // pentool: the menu owns the cursor, so corner placement happens here and the
-  // result is what the GL side draws. Right click skips to the next corner.
-  if(s.radar_editor){
+  // ================= 04b Radar =================
+  // The square is dragged and resized HERE, in the menu: this is the only place
+  // with a mouse that we own, so with the menu closed nothing can move it and the
+  // position is locked. Scale is 1:1: pixels / metres is the same on x and z.
+  {
     ImGuiIO &io=ImGui::GetIO();
-    chams::radar_publish_cursor(io.MousePos.x,io.MousePos.y,ImGui::IsMousePosValid());
-    if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
-      int c=s.radar_corner;
-      if(c>=0&&c<4){ s.radar_map_x[c]=io.MousePos.x; s.radar_map_y[c]=io.MousePos.y;
-        s.radar_corner=(c+1)%4; if(s.radar_corner==0) s.radar_map_marked=true; chams::save(); }
-    }
-    if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-      s.radar_corner=(s.radar_corner+1)%4;
-    }
+    const float side=std::max(80.f,s.radar_square_px);
+    const float x=s.radar_square_x, y=s.radar_square_y;
+    const ImVec2 m=io.MousePos;
+    const float handle=14*Unit();
+    const bool overSquare = m.x>=x-4 && m.x<=x+side+4 && m.y>=y-4 && m.y<=y+side+4;
+    const bool overHandle = m.x>=x+side-handle && m.x<=x+side+8 && m.y>=y+side-handle && m.y<=y+side+8;
+    static bool s_dragging=false; static bool s_resizing=false;
+    static float s_grab_x=0.f, s_grab_y=0.f;
+    if(overHandle && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){ s_resizing=true; s_grab_x=m.x-x; s_grab_y=m.y-y; }
+    else if(overSquare && ImGui::IsMouseClicked(ImGuiMouseButton_Left)){ s_dragging=true; s_grab_x=m.x-x; s_grab_y=m.y-y; }
+    if(s_resizing && ImGui::IsMouseDown(ImGuiMouseButton_Left)){
+      const float want=std::max(80.f,std::max(m.x-x,m.y-y));
+      if(want!=s.radar_square_px){ s.radar_square_px=want; chams::save(); }
+    } else s_resizing=false;
+    if(s_dragging && ImGui::IsMouseDown(ImGuiMouseButton_Left)){
+      s.radar_square_x=std::max(0.f,std::min(io.DisplaySize.x-side,m.x-s_grab_x));
+      s.radar_square_y=std::max(0.f,std::min(io.DisplaySize.y-side,m.y-s_grab_y));
+      chams::save();
+    } else s_dragging=false;
+    // faint outline of the square inside the menu, so it can be found by eye
+    ImDrawList *dl=ImGui::GetForegroundDrawList();
+    dl->AddRect(ImVec2(x,y),ImVec2(x+side,y+side),ImGui::GetColorU32(kMint,0.55f),0.f,0,1.5f);
+    dl->AddRectFilled(ImVec2(x+side-handle,y+side-handle),ImVec2(x+side,y+side),ImGui::GetColorU32(kMint,0.35f),2.f);
+    dl->AddCircleFilled(ImVec2(x+side*0.5f,y+side*0.5f),4.f,ImGui::GetColorU32(kMint,0.9f),12);
+    if(s_resizing) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE);
+    else if(s_dragging||overSquare) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
   }
-  if(BeginFigmaSection("radar","04b","Minimap marks","Mark the minimap once with the pentool, then every detected player is marked on it.",&s.radar_marks)){
-    SubLabel("Calibration (pentool)");
-    WrapText(kMuted,"Open the pentool editor and drag the four anchors onto the map corners, clockwise from the top left. The marked quad is the scale: orientation, size and any skew of the map come from it.",ImGui::GetContentRegionAvail().x);
-    Label1("Pentool editor"); ToggleRight("##radared",&s.radar_editor);
-    { const char* corners[4]={"Corner 1 · top left","Corner 2 · top right","Corner 3 · bottom right","Corner 4 · bottom left"};
-      int c=s.radar_corner;
-      if(Chips("radarcorner",corners,4,&c,ImGui::GetContentRegionAvail().x)){ s.radar_corner=c; s.radar_editor=true; } }
-    if(s.radar_editor){
-      InfoStrip("Click to place a corner","Left click in the game world places the active corner. The next corner is selected automatically. Right click skips to the next corner.");
-    }
-    Label1("Map is marked"); ToggleRight("##radarmarked",&s.radar_map_marked);
-    WrapText(kMuted,"Marks are only drawn while the map is marked, so nothing is drawn inside the world by mistake.",ImGui::GetContentRegionAvail().x);
+
+  if(BeginFigmaSection("radar","04b","Radar","A player-centred radar of your own, built from the captured matrices. Drag the square with the menu open, resize from its bottom right corner.",&s.radar_marks)){
+    SubLabel("Position (drag in game)");
+    WrapText(kMuted,"The square outline and the dot in its middle are drawn while the menu is open. Drag the square anywhere, pull its bottom right corner to resize. Close the menu and the position locks.",ImGui::GetContentRegionAvail().x);
+    SliderRowF("Position X","##radarx",&s.radar_square_x,0.f,3840.f,"%.0f px","");
+    SliderRowF("Position Y","##radary",&s.radar_square_y,0.f,2160.f,"%.0f px","");
     Divider();
-    SubLabel("Scale");
-    SliderRowF("Half extent (metres)","##radarrad",&s.radar_radius,10.f,400.f,"%.0f m","");
-    WrapText(kMuted,"Distance from the map centre to its edge in the world. If the dots sit too close to the middle, raise this; if they run past the edge, lower it.",ImGui::GetContentRegionAvail().x);
-    SliderRowF("Map rotation","##radaryaw",&s.radar_yaw,-3.15f,3.15f,"%.2f rad","");
-    WrapText(kMuted,"Rotates the marks around the map centre. Use it when the map is not north-up, or when the dots trail off a corner.",ImGui::GetContentRegionAvail().x);
+    SubLabel("Size and area");
+    SliderRowF("Square size","##radarsize",&s.radar_square_px,80.f,1200.f,"%.0f px","");
+    WrapText(kMuted,"How big the radar is on screen. Same as pulling its bottom right corner.",ImGui::GetContentRegionAvail().x);
+    SliderRowF("Area across","##radararea",&s.radar_area_m,10.f,600.f,"%.0f m","");
+    WrapText(kMuted,"How much world fits across the square. The scale stays 1:1: pixels per metre is the same on both axes, so distances and directions read true.",ImGui::GetContentRegionAvail().x);
+    { char buf[96]; float ppm=s.radar_square_px/std::max(1.f,s.radar_area_m);
+      snprintf(buf,sizeof(buf),"%.2f px per metre",ppm); InfoStrip("Scale",buf); }
     Divider();
     SubLabel("Marks");
     Label1("Movement direction"); ToggleRight("##radartrack",&s.radar_track);
-    WrapText(kMuted,"A short tick points the way a player is moving, from the last two positions.",ImGui::GetContentRegionAvail().x);
+    WrapText(kMuted,"A short tick points the way a player is moving, from their last two positions.",ImGui::GetContentRegionAvail().x);
+    SliderRowF("Rotation","##radaryaw",&s.radar_yaw,-3.15f,3.15f,"%.2f rad","");
+    WrapText(kMuted,"Rotates the radar around you. Leave at 0 for world aligned, or match it to how you read the game.",ImGui::GetContentRegionAvail().x);
     ColorRow("Visible · colour","radardot",s.radar_dot_colour,true);
     ColorRow("Behind a wall · colour","radarwall",s.radar_wall_colour,true);
+    ColorRow("Frame · colour","radarframe",s.radar_frame_colour,true);
     Divider();
-    { char buf[128]; snprintf(buf,sizeof(buf),"%u player%s marked",chams::radar_marks_now(),chams::radar_marks_now()==1?"":"s");
-      InfoStrip("Live",buf); }
+    { char buf[128]; snprintf(buf,sizeof(buf),"%u player%s on the radar",chams::radar_marks_now(),chams::radar_marks_now()==1?"":"s"); InfoStrip("Live",buf); }
     EndFigmaSection();
   }
 

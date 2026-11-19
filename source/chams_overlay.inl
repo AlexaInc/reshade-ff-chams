@@ -565,16 +565,15 @@ void main()
 				comp_gl_error().load(std::memory_order_relaxed),
 				diag_thread_id(), dkey, diag_hdc(), dfound ? 1 : 0, dfound ? dkey : nullptr);
 		}
-		// ---- minimap marks (stage 109) ---------------------------------------
-		// Positions collected this frame become the snapshot, and the marks are
-		// drawn on the finished image. Done before the composite gates below so
-		// the marks never depend on the overlay renderer being available.
-		if (g_settings.radar_marks || g_settings.radar_editor) {
-			chams_radar::frame_commit(g_settings.radar_radius, g_settings.radar_yaw);
+		// ---- radar (stage 110) -----------------------------------------------
+		// Collected character positions become this frame snapshot, then the radar
+		// square and its marks are drawn on the finished image. Before the
+		// composite gates below, so the radar never depends on the mask renderer.
+		if (g_settings.radar_marks) {
+			chams_radar::frame_commit(g_settings.radar_area_m, g_settings.radar_yaw);
 			g_radar_bodies.store(chams_radar::state().bodies.load(), std::memory_order_relaxed);
 			chams_radar::sync_from_settings();
-			chams_radar::draw(g_settings.radar_marks, g_settings.radar_editor,
-				g_settings.radar_corner, g_settings.radar_track);
+			chams_radar::draw(true, false, 0, g_settings.radar_track);
 		}
 		// Stage 85: split disabled by reason (total preserved). Priority = source order:
 		// no_context > render_mode > not_enabled > menu_open. Same return behavior.
