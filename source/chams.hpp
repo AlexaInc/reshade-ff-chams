@@ -150,6 +150,21 @@ namespace reshade::chams
 		// Default OFF per spec; position selectable four corners; persisted as
 		// ShowFPS (bool) + FPSPosition (string TopLeft/TopRight/BottomLeft/BottomRight)
 		bool  show_fps                = false;  // default OFF
+
+		// ---- minimap marks (stage 109) ---------------------------------
+		// One mark per detected character inside the minimap the user marked with
+		// the pentool. Calibration lives in chams.ini [RADAR]; see chams_radar.inl.
+		bool  radar_marks             = false;  // default OFF: calibrate first
+		bool  radar_track             = true;   // direction tick from the last positions
+		bool  radar_editor            = false;  // pentool editor open
+		int   radar_corner            = 0;      // 0..3 while marking the corners
+		float radar_map_x[4]          = { 0.0f, 0.0f, 0.0f, 0.0f };
+		float radar_map_y[4]          = { 0.0f, 0.0f, 0.0f, 0.0f };
+		bool  radar_map_marked        = false;
+		float radar_radius            = 60.0f;  // half extent of the map, metres
+		float radar_yaw               = 0.0f;   // map orientation, radians
+		float radar_dot_colour[4]     = { 0.24f, 0.91f, 0.75f, 0.95f };
+		float radar_wall_colour[4]    = { 1.00f, 0.36f, 0.30f, 0.95f };
 		int   fps_position            = 0;      // 0 TopLeft 1 TopRight 2 BottomLeft 3 BottomRight default TopLeft
 		float fps_scale               = 1.0f;   // text scale (reuses runtime scale range)
 		float fps_color[4]            = { 1.0f, 1.0f, 0.784314f, 1.0f }; // matches ReShade FPSText
@@ -159,6 +174,9 @@ namespace reshade::chams
 	extern bool     g_overlay_open;
 	extern int      g_budget_left;
 	extern std::atomic<unsigned> g_frame_id;
+	// live minimap marks (stage 109): published by the draw unit, read by the menu
+	extern std::atomic<unsigned> g_radar_bodies;
+	unsigned radar_marks_now();
 
 	void dump_line(const char *text);   // append one line to %TEMP%\chams-dump.txt
 	const char *dump_path();            // full path of the dump file (UTF-8)

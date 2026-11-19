@@ -46,6 +46,13 @@ namespace reshade::chams
 	bool     g_overlay_open = false;
 	int      g_budget_left  = k_max_draws_per_frame;
 	std::atomic<unsigned> g_frame_id{0};
+	std::atomic<unsigned> g_radar_bodies{0};
+
+	// live minimap marks, published by the draw unit (chams_radar::state().bodies)
+	unsigned radar_marks_now()
+	{
+		return g_radar_bodies.load(std::memory_order_relaxed);
+	}
 
 	// ======================= dump file ==================================
 	// ReShade.log sits next to HD-Player.exe, which is often read-only (the
@@ -304,6 +311,21 @@ namespace reshade::chams
 		config.get("CHAMS", "DumpAll",            g_settings.dump_all);
 		config.get("CHAMS", "ThroughWalls",       g_settings.through_walls);
 		config.get("CHAMS", "WideMatch",          g_settings.wide_match);
+
+		config.get("RADAR", "Marks",             g_settings.radar_marks);
+		config.get("RADAR", "Track",             g_settings.radar_track);
+		config.get("RADAR", "Marked",            g_settings.radar_map_marked);
+		for (int i = 0; i < 4; ++i) {
+			char kx[16], ky[16];
+			std::snprintf(kx, sizeof(kx), "CornerX%d", i);
+			std::snprintf(ky, sizeof(ky), "CornerY%d", i);
+			config.get("RADAR", kx, g_settings.radar_map_x[i]);
+			config.get("RADAR", ky, g_settings.radar_map_y[i]);
+		}
+		config.get("RADAR", "Radius",            g_settings.radar_radius);
+		config.get("RADAR", "Yaw",               g_settings.radar_yaw);
+		config.get("RADAR", "DotColour",         g_settings.radar_dot_colour);
+		config.get("RADAR", "WallColour",        g_settings.radar_wall_colour);
 		config.get("CHAMS", "ShowFPS",            g_settings.show_fps);
 		{
 			std::string fps_pos_str;
@@ -371,6 +393,21 @@ namespace reshade::chams
 		config.set("CHAMS", "DumpAll",            g_settings.dump_all);
 		config.set("CHAMS", "ThroughWalls",       g_settings.through_walls);
 		config.set("CHAMS", "WideMatch",          g_settings.wide_match);
+
+		config.set("RADAR", "Marks",             g_settings.radar_marks);
+		config.set("RADAR", "Track",             g_settings.radar_track);
+		config.set("RADAR", "Marked",            g_settings.radar_map_marked);
+		for (int i = 0; i < 4; ++i) {
+			char kx[16], ky[16];
+			std::snprintf(kx, sizeof(kx), "CornerX%d", i);
+			std::snprintf(ky, sizeof(ky), "CornerY%d", i);
+			config.set("RADAR", kx, g_settings.radar_map_x[i]);
+			config.set("RADAR", ky, g_settings.radar_map_y[i]);
+		}
+		config.set("RADAR", "Radius",            g_settings.radar_radius);
+		config.set("RADAR", "Yaw",               g_settings.radar_yaw);
+		config.set("RADAR", "DotColour",         g_settings.radar_dot_colour);
+		config.set("RADAR", "WallColour",        g_settings.radar_wall_colour);
 		config.set("CHAMS", "ShowFPS",            g_settings.show_fps);
 		config.set("CHAMS", "FPSPosition",        fps_position_to_string(g_settings.fps_position));
 		config.set("CHAMS", "FPSScale",           g_settings.fps_scale);

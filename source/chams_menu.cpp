@@ -805,6 +805,37 @@ void reshade::runtime::draw_gui_chams(){
     EndFigmaSection();
   }
 
+  // ================= 04b Minimap marks =================
+  if(BeginFigmaSection("radar","04b","Minimap marks","Mark the minimap once with the pentool, then every detected player is marked on it.",&s.radar_marks)){
+    SubLabel("Calibration (pentool)");
+    WrapText(kMuted,"Open the pentool editor and drag the four anchors onto the map corners, clockwise from the top left. The marked quad is the scale: orientation, size and any skew of the map come from it.",ImGui::GetContentRegionAvail().x);
+    Label1("Pentool editor"); ToggleRight("##radared",&s.radar_editor);
+    { const char* corners[4]={"Corner 1 · top left","Corner 2 · top right","Corner 3 · bottom right","Corner 4 · bottom left"};
+      int c=s.radar_corner;
+      if(Chips("radarcorner",corners,4,&c,ImGui::GetContentRegionAvail().x)){ s.radar_corner=c; s.radar_editor=true; } }
+    if(s.radar_editor){
+      InfoStrip("Click to place a corner","Left click in the game world places the active corner. The next corner is selected automatically. Right click skips to the next corner.",0);
+    }
+    Label1("Map is marked"); ToggleRight("##radarmarked",&s.radar_map_marked);
+    WrapText(kMuted,"Marks are only drawn while the map is marked, so nothing is drawn inside the world by mistake.",ImGui::GetContentRegionAvail().x);
+    Divider();
+    SubLabel("Scale");
+    SliderRowF("Half extent (metres)","##radarrad",&s.radar_radius,10.f,400.f,"%.0f m","");
+    WrapText(kMuted,"Distance from the map centre to its edge in the world. If the dots sit too close to the middle, raise this; if they run past the edge, lower it.",ImGui::GetContentRegionAvail().x);
+    SliderRowF("Map rotation","##radaryaw",&s.radar_yaw,-3.15f,3.15f,"%.2f rad","");
+    WrapText(kMuted,"Rotates the marks around the map centre. Use it when the map is not north-up, or when the dots trail off a corner.",ImGui::GetContentRegionAvail().x);
+    Divider();
+    SubLabel("Marks");
+    Label1("Movement direction"); ToggleRight("##radartrack",&s.radar_track);
+    WrapText(kMuted,"A short tick points the way a player is moving, from the last two positions.",ImGui::GetContentRegionAvail().x);
+    ColorRow("Visible · colour","radardot",s.radar_dot_colour,true);
+    ColorRow("Behind a wall · colour","radarwall",s.radar_wall_colour,true);
+    Divider();
+    { char buf[128]; snprintf(buf,sizeof(buf),"%u player%s marked",chams::radar_marks_now(),chams::radar_marks_now()==1?"":"s");
+      InfoStrip("Live",buf,0); }
+    EndFigmaSection();
+  }
+
   // ================= 05 2D stroke =================
   if(BeginFigmaSection("stroke","05","2D stroke","A clean screen-space outline around detected characters.",&s.stroke)){
     SliderRowI("Stroke size · open area","##stopen",&s.stroke_open_size,1,16,"px");
