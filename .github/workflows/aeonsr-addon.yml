@@ -97,11 +97,15 @@ jobs:
             Copy-Item -Recurse -Force (Join-Path $from '*') $to
             Write-Host "COPY: $from -> $to"
           }
+          # ffx_upscale.h includes ../../api/include/ffx_api.h, so the sibling
+          # tree third_party/api/include must exist next to third_party/ffx —
+          # that is how upstream lays these out.
+          CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/api/include" "third_party/api/include"
           CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/api/include" "third_party/ffx/include"
           CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/upscalers/include" "third_party/ffx/include"
+          CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/framegeneration/include" "third_party/ffx/include"
           CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/api/include" "third_party/ffx_dx11/include"
           CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/upscalers/include" "third_party/ffx_dx11/include"
-          CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/framegeneration/include" "third_party/ffx/include"
           CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/framegeneration/include" "third_party/ffx_dx11/include"
           CopyTree "external/xess/inc" "third_party/xess/include"
           CopyTree "external/Vulkan-Headers/include/vk_video" "third_party/khronos/include/GL"
