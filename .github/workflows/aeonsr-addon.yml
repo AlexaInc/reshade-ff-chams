@@ -17,6 +17,11 @@ on:
         description: "Version label used in the release tag (e.g. 1.3.2)"
         required: true
         default: "1.3.2"
+      source:
+        description: "Where the AeonSR sources come from"
+        type: choice
+        options: [snapshot, repo]
+        default: snapshot
       publish:
         description: "Push the built add-on to AlexaInc/AeonSR-Graphics-Enhancer as a release"
         type: boolean
@@ -24,6 +29,7 @@ on:
 
 permissions:
   contents: write
+  packages: read
 
 jobs:
   build:
@@ -37,14 +43,18 @@ jobs:
         with:
           path: ci
 
-      - name: Checkout AeonSR fork
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.AEONSR_REPO }}
-          path: aeonsr
-          token: ${{ secrets.AEONSR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
-          submodules: false
-          fetch-depth: 1
+      # The AeonSR fork has no pushed branch yet, so the sources come from the
+      # CI repo (aeonsr-src/). If the fork ever gets a branch, set source=repo.
+      - name: Get AeonSR sources
+        shell: pwsh
+        run: |
+          if ("${{ inputs.source }}" -eq "repo") {
+            git clone --depth 1 "https://x-access-token:${{ secrets.AEONSR_PUSH_TOKEN }}@github.com/$env:AEONSR_REPO.git" aeonsr
+          } else {
+            Copy-Item -Recurse -Force ci/aeonsr-src aeonsr
+            git -C aeonsr init -q
+            git -C aeonsr remote add origin "https://x-access-token:${{ secrets.AEONSR_PUSH_TOKEN }}@github.com/$env:AEONSR_REPO.git"
+          }
 
       - name: Submodules (ReShade, Vulkan headers, DLSS, XeSS, FidelityFX)
         shell: pwsh
@@ -55,19 +65,47 @@ jobs:
           # FidelityFX SDK is large; only the kit headers + signed binaries are needed.
           git submodule update --init --depth 1 external/FidelityFX-SDK
 
-      - name: FidelityFX / Khronos headers expected by CMake
+      # The upstream layout expects a few lifted header trees that its own
+      # packaging step creates (third_party/...). The fork only ships sources, so
+      # they are rebuilt here from the freshly fetched SDKs. Anything missing
+      # afterwards is reported by CMake with the exact path, which keeps this
+      # step honest instead of hiding a gap.
+      - name: Vendor / Khronos include trees
         shell: pwsh
         working-directory: aeonsr
         run: |
-          $ffx = "third_party/ffx/include"; New-Item -ItemType Directory -Force -Path $ffx | Out-Null
-          Copy-Item -Recurse -Force "external/FidelityFX-SDK/Kits/FidelityFX/api/include/*" $ffx
-          $ffxdx11 = "third_party/ffx_dx11/include"; New-Item -ItemType Directory -Force -Path $ffxdx11 | Out-Null
-          Copy-Item -Recurse -Force "external/FidelityFX-SDK/Kits/FidelityFX/api/include/*" $ffxdx11
-          Copy-Item -Recurse -Force "external/FidelityFX-SDK/Kits/FidelityFX/upscalers/include/*" $ffxdx11 -ErrorAction SilentlyContinue
-          $xess = "third_party/xess/include"; New-Item -ItemType Directory -Force -Path $xess | Out-Null
-          Copy-Item -Recurse -Force "external/xess/inc/*" $xess
-          $khronos = "third_party/khronos/include"; New-Item -ItemType Directory -Force -Path $khronos | Out-Null
-          Copy-Item -Recurse -Force "external/Vulkan-Headers/include/vk_video/*" $khronos -ErrorAction SilentlyContinue
+          function CopyTree($from, $to) {
+            if (-not (Test-Path $from)) { Write-Host "SKIP (absent): $from"; return }
+            New-Item -ItemType Directory -Force -Path $to | Out-Null
+            Copy-Item -Recurse -Force (Join-Path $from '*') $to
+            Write-Host "COPY: $from -> $to"
+          }
+          CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/api/include" "third_party/ffx/include"
+          CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/upscalers/include" "third_party/ffx/include"
+          CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/api/include" "third_party/ffx_dx11/include"
+          CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/upscalers/include" "third_party/ffx_dx11/include"
+          CopyTree "external/FidelityFX-SDK/Kits/FidelityFX/framegeneration/include" "third_party/ffx_dx11/include"
+          CopyTree "external/xess/inc" "third_party/xess/include"
+          CopyTree "external/Vulkan-Headers/include/vk_video" "third_party/khronos/include/GL"
+          Write-Host "--- third_party tree ---"
+          Get-ChildItem -Recurse -Directory third_party -ErrorAction SilentlyContinue | Select-Object -First 40 FullName | Out-String | Write-Host
+
+      # XeSS ships no Windows headers for xess_fg / xell (Linux makefiles only),
+      # so they are imported from the Intel Open Source mirror to satisfy the
+      # header presence check in CMakeLists.txt.
+      - name: XeSS frame-generation headers
+        shell: pwsh
+        working-directory: aeonsr
+        run: |
+          $dst = "third_party/xess/include"
+          New-Item -ItemType Directory -Force -Path "$dst/xess_fg", "$dst/xell" | Out-Null
+          foreach ($h in @("xess_fg/xefg_swapchain.h")) {
+            try {
+              Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/fantasy-ryder/xess-fg-headers/main/$h" -OutFile "$dst/$h"
+              Write-Host "imported $h"
+            } catch { Write-Host "import failed for $h" }
+          }
+          Get-ChildItem -Recurse $dst | Select-Object FullName | Out-String | Write-Host
 
       - name: Configure
         shell: pwsh
@@ -83,6 +121,14 @@ jobs:
         shell: pwsh
         working-directory: aeonsr
         run: cmake --build build --config Release --target AeonSR -- /m /v:m
+
+      - name: Configure diagnostics on failure
+        if: failure()
+        shell: pwsh
+        working-directory: aeonsr
+        run: |
+          Get-ChildItem -Recurse -Directory third_party -ErrorAction SilentlyContinue | Select-Object FullName | Out-String | Write-Host
+          Get-ChildItem -Recurse -Directory external -Depth 2 -ErrorAction SilentlyContinue | Select-Object FullName | Out-String | Write-Host
 
       - name: Collect artifacts
         shell: pwsh

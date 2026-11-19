@@ -1,0 +1,8 @@
+build/
+out/
+*.user
+*.log
+*.ini
+.vs/
+.vscode/
+external/D3D12Core/D3D12Core.dll
