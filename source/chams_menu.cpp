@@ -814,7 +814,7 @@ void reshade::runtime::draw_gui_chams(){
       int c=s.radar_corner;
       if(Chips("radarcorner",corners,4,&c,ImGui::GetContentRegionAvail().x)){ s.radar_corner=c; s.radar_editor=true; } }
     if(s.radar_editor){
-      InfoStrip("Click to place a corner","Left click in the game world places the active corner. The next corner is selected automatically. Right click skips to the next corner.",0);
+      InfoStrip("Click to place a corner","Left click in the game world places the active corner. The next corner is selected automatically. Right click skips to the next corner.");
     }
     Label1("Map is marked"); ToggleRight("##radarmarked",&s.radar_map_marked);
     WrapText(kMuted,"Marks are only drawn while the map is marked, so nothing is drawn inside the world by mistake.",ImGui::GetContentRegionAvail().x);
@@ -832,7 +832,7 @@ void reshade::runtime::draw_gui_chams(){
     ColorRow("Behind a wall · colour","radarwall",s.radar_wall_colour,true);
     Divider();
     { char buf[128]; snprintf(buf,sizeof(buf),"%u player%s marked",chams::radar_marks_now(),chams::radar_marks_now()==1?"":"s");
-      InfoStrip("Live",buf,0); }
+      InfoStrip("Live",buf); }
     EndFigmaSection();
   }
 
