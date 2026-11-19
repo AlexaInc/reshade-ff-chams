@@ -123,23 +123,29 @@ static float WrapText(ImVec4 col,const char* t,float maxw){
 }
 
 // ---------- widgets ----------
-bool AlexaToggle(const char* id,bool* v){
+// pure renderer: draws the 32x18 switch at 'p' from the value alone. It has no
+// hit test, so a caller that already handled the click can never double-apply
+// it, and a caller that only wants a mirror of a state can never steal a click.
+void ToggleDraw(ImDrawList* dl,ImVec2 p,bool v,bool hovered){
   float k=Unit();
   float w=32*k,h=18*k;
+  ImVec2 a=p; ImVec2 b(a.x+w,a.y+h); float r=h*0.5f;
+  ImVec4 bg=v?kMint:ImVec4(0.10f,0.13f,0.16f,1.f);
+  if(hovered) bg=Mix(bg,kText,0.10f);
+  dl->AddRectFilled(a,b,Col(bg),r);
+  if(!v) dl->AddRect(a,b,Col(kLine),r,0,Hair());
+  float kr=6.f*k; float kx=v?(b.x-kr-2.f*k):(a.x+kr+2.f*k); float ky=a.y+h*0.5f;
+  dl->AddCircleFilled(ImVec2(kx,ky),kr,Col(ImVec4(0.08f,0.10f,0.12f,1.f)),16);
+  if(!v) dl->AddCircleFilled(ImVec2(kx,ky),kr-0.5f,Col(kMuted),16);
+}
+// row switch: hit test + render, unchanged behaviour for every row caller
+bool AlexaToggle(const char* id,bool* v){
+  float k=Unit();
   ImVec2 p0=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton(id,ImVec2(w,h));
+  ImGui::InvisibleButton(id,ImVec2(32*k,18*k));
   bool hovered=ImGui::IsItemHovered(); bool clicked=ImGui::IsItemClicked();
   if(clicked) *v=!*v;
-  ImDrawList* dl=ImGui::GetWindowDrawList();
-  ImVec2 a=ImGui::GetItemRectMin(); ImVec2 b(a.x+w,a.y+h); float r=h*0.5f;
-  ImVec4 bg=*v?kMint:ImVec4(0.10f,0.13f,0.16f,1.f);
-  if(hovered) bg=Mix(bg,kText,0.06f);
-  dl->AddRectFilled(a,b,Col(bg),r);
-  if(!*v) dl->AddRect(a,b,Col(kLine),r,0,Hair());
-  float kr=6.f*k; float kx=*v?(b.x-kr-2.f*k):(a.x+kr+2.f*k); float ky=a.y+h*0.5f;
-  dl->AddCircleFilled(ImVec2(kx,ky),kr,Col(ImVec4(0.08f,0.10f,0.12f,1.f)),16);
-  if(!*v) dl->AddCircleFilled(ImVec2(kx,ky),kr-0.5f,Col(kMuted),16);
-  (void)p0;
+  ToggleDraw(ImGui::GetWindowDrawList(),p0,*v,hovered);
   return clicked;
 }
 void Chevron(ImDrawList* dl,ImVec2 c,bool open,ImVec4 col4){
@@ -443,14 +449,37 @@ bool BeginFigmaSection(const char* id,const char* num,const char* title,const ch
   float headerH=ImGui::GetFrameHeight()+10.f*k; if(subtitle&&subtitle[0]) headerH+=14.f*k;
   float r=Rounding();
   ImGui::PushID(id);
-  bool headerPressed=ImGui::InvisibleButton("##hdr",ImVec2(w,headerH));
+  // ---------------------------------------------------------------
+  // Header hit boxes (stage 108 -- "switch is blurred and cannot be turned on")
+  // ---------------------------------------------------------------
+  // The header used to be ONE InvisibleButton covering the full width, with the
+  // toggle drawn on top of it afterwards. So the switch could be seen but never
+  // clicked: the header item took the press, and clicking there collapsed the
+  // panel instead. Its look was only "hovered" while the mouse was over the
+  // header, which read as a blurred / disabled switch.
+  //
+  // Now the header is split into two hit boxes that never overlap:
+  //   - label zone  : everything left of the toggle  -> collapse / expand
+  //   - toggle zone : the switch itself              -> the real on/off
+  // The toggle is registered FIRST, so nothing can ever be drawn over it.
+  float togw=32*k; float togpad=10*k;
+  float togx=cur.x+w-togpad-togw; float togy=cur.y+(headerH-18*k)*0.5f;
+  bool togPressed=false, togHovered=false;
+  if(tog){
+    ImGui::SetCursorScreenPos(ImVec2(togx,togy));
+    ImGui::PushID("tog");
+    // 6px halo around the switch, so a slightly-off click still lands
+    ImGui::SetCursorScreenPos(ImVec2(togx-6*k,togy-6*k));
+    togPressed=ImGui::InvisibleButton("##toghit",ImVec2(togw+12*k,18*k+12*k));
+    togHovered=ImGui::IsItemHovered();
+    if(togPressed){ *tog=!*tog; chams::save(); }
+    ImGui::PopID();
+  }
+  float labelW=std::max(1.f, (tog?togx-6*k:cur.x+w)-cur.x);
+  ImGui::SetCursorScreenPos(cur);
+  bool headerPressed=ImGui::InvisibleButton("##hdr",ImVec2(labelW,headerH));
   bool hovered=ImGui::IsItemHovered(); bool held=ImGui::IsItemActive();
-  // toggle hit area on the right of the header is handled BEFORE the header
-  // hit test below so the two can never fight over one click.
-  float togw=32*k; float togx=cur.x+w-16*k-togw; float togy=cur.y+(headerH-18*k)*0.5f;
-  bool overTog=false;
-  if(tog) overTog = ImGui::IsItemHovered() && ImGui::GetIO().MousePos.x>=togx-4*k;
-  if(headerPressed && !overTog){ open=!open; eff=open; }
+  if(headerPressed){ open=!open; eff=open; }
   ImDrawList* dl=ImGui::GetWindowDrawList();
   ImVec4 hdrCol=held?Mix(kCard,kText,0.04f):hovered?Mix(kCard,kText,0.03f):kCard;
   ImDrawFlags hc=eff?ImDrawFlags_RoundCornersTop:ImDrawFlags_RoundCornersAll;
@@ -467,11 +496,8 @@ bool BeginFigmaSection(const char* id,const char* num,const char* title,const ch
   }
   if(num){ ImVec2 ns=ImGui::CalcTextSize(num); dl->AddText(ImVec2(cur.x+w-10*k-ns.x- (tog? togw+6*k:0.f),ty),Col(kDim),num); }
   if(tog){
-    ImGui::SetCursorScreenPos(ImVec2(togx,togy));
-    ImGui::PushID("tog");
-    bool tv=AlexaToggle("##t",tog);
-    ImGui::PopID();
-    (void)tv;
+    // drawn from state only: the click was already handled above
+    ToggleDraw(dl,ImVec2(togx,togy),*tog,togHovered);
   }
   ImGui::PopID();
   ImGui::SetCursorScreenPos(ImVec2(cur.x,cur.y+headerH));
@@ -760,6 +786,10 @@ void reshade::runtime::draw_gui_chams(){
     { const char* modes[4]={"Solid colour","Blend","Real clothes","Clothes + light"};
       int m=s.glow_mode;
       if(Chips("fillmode",modes,4,&m,ImGui::GetContentRegionAvail().x)){ s.glow_mode=m; chams::save(); } }
+    if(!s.glow){
+      InfoStrip("Player highlight is off",
+                "The switch in this panel's header turns body fill on and off. Turn it on to apply the settings below.");
+    }
     switch(s.glow_mode){
       case 1: WrapText(kMuted,"Blend keeps the real clothes and layers the colour over them.",ImGui::GetContentRegionAvail().x); break;
       case 2: WrapText(kMuted,"Real clothes drawn through walls — best for outfit visibility.",ImGui::GetContentRegionAvail().x); break;
