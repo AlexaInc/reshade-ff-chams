@@ -806,6 +806,20 @@ void reshade::runtime::draw_gui_chams(){
   }
 
   // ================= 04b Minimap marks =================
+  // pentool: the menu owns the cursor, so corner placement happens here and the
+  // result is what the GL side draws. Right click skips to the next corner.
+  if(s.radar_editor){
+    ImGuiIO &io=ImGui::GetIO();
+    chams::radar_publish_cursor(io.MousePos.x,io.MousePos.y,ImGui::IsMousePosValid());
+    if(ImGui::IsMouseClicked(ImGuiMouseButton_Left)){
+      int c=s.radar_corner;
+      if(c>=0&&c<4){ s.radar_map_x[c]=io.MousePos.x; s.radar_map_y[c]=io.MousePos.y;
+        s.radar_corner=(c+1)%4; if(s.radar_corner==0) s.radar_map_marked=true; chams::save(); }
+    }
+    if(ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+      s.radar_corner=(s.radar_corner+1)%4;
+    }
+  }
   if(BeginFigmaSection("radar","04b","Minimap marks","Mark the minimap once with the pentool, then every detected player is marked on it.",&s.radar_marks)){
     SubLabel("Calibration (pentool)");
     WrapText(kMuted,"Open the pentool editor and drag the four anchors onto the map corners, clockwise from the top left. The marked quad is the scale: orientation, size and any skew of the map come from it.",ImGui::GetContentRegionAvail().x);

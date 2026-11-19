@@ -573,13 +573,6 @@ void main()
 			chams_radar::frame_commit(g_settings.radar_radius, g_settings.radar_yaw);
 			g_radar_bodies.store(chams_radar::state().bodies.load(), std::memory_order_relaxed);
 			chams_radar::sync_from_settings();
-			{
-				int corner = g_settings.radar_corner;
-				bool marked = g_settings.radar_map_marked;
-				chams_radar::editor_input(g_settings.radar_editor, corner, marked);
-				g_settings.radar_corner = corner;
-				g_settings.radar_map_marked = marked;
-			}
 			chams_radar::draw(g_settings.radar_marks, g_settings.radar_editor,
 				g_settings.radar_corner, g_settings.radar_track);
 		}

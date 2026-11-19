@@ -177,6 +177,7 @@ namespace reshade::chams
 	// live minimap marks (stage 109): published by the draw unit, read by the menu
 	extern std::atomic<unsigned> g_radar_bodies;
 	unsigned radar_marks_now();
+	void radar_publish_cursor(float x, float y, bool valid);
 
 	void dump_line(const char *text);   // append one line to %TEMP%\chams-dump.txt
 	const char *dump_path();            // full path of the dump file (UTF-8)
