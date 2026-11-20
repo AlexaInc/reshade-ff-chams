@@ -164,6 +164,99 @@ namespace reshade::chams
 		wcscat_s(out, MAX_PATH, L"chams-dump.txt");
 	}
 
+	// ---------------------------------------------------------------- capture
+	// Stage 115: the Runtime capture panel was wired to nothing. The recorder,
+	// correlator and every hook that feeds them already existed and already ran
+	// (opengl.cpp emits draw records, chams_gl.inl opens and closes them), but
+	// nothing ever called runtime_start(), so no session directory was created and
+	// nothing was ever recorded. These functions are the missing switch.
+	//
+	// Scope note: this records GL call metadata (what was drawn, when, which
+	// context and surface). It does not capture memory contents, screenshots, file
+	// paths from the game, or credentials -- that promise is in the recorder's own
+	// header comment and nothing here widens it.
+	static std::filesystem::path s_capture_parent;
+
+	static bool capture_parent_dir(std::filesystem::path &out)
+	{
+		if (!s_capture_parent.empty()) { out = s_capture_parent; return true; }
+		WCHAR dump[MAX_PATH] = {};
+		build_dump_path(dump);
+		if (dump[0] == L'\0')
+			return false;
+		out = std::filesystem::path(dump).parent_path() / L"capture";
+		s_capture_parent = out;
+		return true;
+	}
+
+	bool capture_session_start()
+	{
+		std::filesystem::path parent;
+		if (!capture_parent_dir(parent))
+			return false;
+		if (!capture::runtime_start(parent)) {
+			// surface the reason instead of failing silently like the old button
+			const capture::status st = capture::runtime_status();
+			reshade::log::message(reshade::log::level::error,
+				"[CHAMS] capture start failed: active=%d io_error=%d dir=%s",
+				st.active ? 1 : 0, st.io_error ? 1 : 0,
+				parent.string().c_str());
+			return false;
+		}
+		const capture::status st = capture::runtime_status();
+		reshade::log::message(reshade::log::level::info,
+			"[CHAMS] capture started: frames=%llu contexts=%llu draws=%llu dir=%s",
+			static_cast<unsigned long long>(st.frames),
+			static_cast<unsigned long long>(st.contexts),
+			static_cast<unsigned long long>(st.draws),
+			capture::runtime_directory().string().c_str());
+		return true;
+	}
+
+	void capture_session_stop()
+	{
+		if (!capture::runtime_status().active)
+			return;
+		const capture::status st = capture::runtime_status();
+		capture::runtime_stop();
+		reshade::log::message(reshade::log::level::info,
+			"[CHAMS] capture stopped: frames=%llu contexts=%llu draws=%llu dropped=%llu written=%llu",
+			static_cast<unsigned long long>(st.frames),
+			static_cast<unsigned long long>(st.contexts),
+			static_cast<unsigned long long>(st.draws),
+			static_cast<unsigned long long>(st.dropped),
+			static_cast<unsigned long long>(st.written));
+	}
+
+	unsigned capture_is_active()
+	{
+		return capture::runtime_status().active ? 1u : 0u;
+	}
+
+	void capture_counters(unsigned *frames, unsigned *contexts, unsigned *draws, unsigned *dropped)
+	{
+		const capture::status st = capture::runtime_status();
+		if (frames)   *frames   = static_cast<unsigned>(st.frames);
+		if (contexts) *contexts = static_cast<unsigned>(st.contexts);
+		if (draws)    *draws    = static_cast<unsigned>(st.draws);
+		if (dropped)  *dropped  = static_cast<unsigned>(st.dropped);
+	}
+
+	// Full path of the live session directory (UTF-8), or "" when inactive.
+	const char *capture_session_path()
+	{
+		static char s_buf[MAX_PATH * 4] = {};
+		s_buf[0] = '\0';
+		const std::filesystem::path dir = capture::runtime_directory();
+		if (dir.empty())
+			return s_buf;
+		const std::wstring wide = dir.wstring();
+		if (WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, s_buf,
+			static_cast<int>(sizeof(s_buf) - 1), nullptr, nullptr) <= 0)
+			s_buf[0] = '\0';
+		return s_buf;
+	}
+
 	static void open_dump_file()
 	{
 		if (s_dump_file != INVALID_HANDLE_VALUE)

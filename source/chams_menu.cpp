@@ -649,9 +649,18 @@ void reshade::runtime::draw_gui_chams(){
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, s_tracking?kMintDark:kInner);
     ImGui::PushStyleColor(ImGuiCol_Text, s_tracking?kMint:kText);
     if(ImGui::Button(s_tracking?"Stop tracking":"Start tracking",ImVec2(bwStart,btnH))){
-      s_tracking=!s_tracking;
-      if(s_tracking){ chams::dump_line("=== runtime capture started ==="); open=true; }
-      else chams::dump_line("=== runtime capture stopped ===");
+      // Stage 115: this used to flip a local bool and write one log line. The
+      // recorder existed but nothing ever started it, so no session directory was
+      // created and the counters could never move.
+      if(s_tracking){
+        chams::capture_session_stop();
+        s_tracking=false;
+        chams::dump_line("=== runtime capture stopped ===");
+      } else {
+        s_tracking=chams::capture_session_start();
+        if(s_tracking) chams::dump_line("=== runtime capture started ===");
+        open=true;
+      }
     }
     ImGui::PopStyleColor(4);
     ImGui::SameLine(0,8*k);
@@ -673,7 +682,16 @@ void reshade::runtime::draw_gui_chams(){
       ImGui::BeginChild("runtime_body",ImVec2(w,0),ImGuiChildFlags_Borders|ImGuiChildFlags_AutoResizeY);
       // tracking state, shown here instead of on the button
       ImGui::TextColored(s_tracking?kMint:kMuted, s_tracking?"Tracking active":"Tracking stopped");
-      { const char* stats[]={"Frames 0","Contexts 0","Draw records 0","Dropped 0"};
+      { // live values; these were hardcoded string literals before stage 115
+        unsigned fr=0,ct=0,dr=0,dp=0;
+        chams::capture_counters(&fr,&ct,&dr,&dp);
+        if(s_tracking && !chams::capture_is_active()) s_tracking=false;   // capture died: reflect it
+        char st0[48],st1[48],st2[48],st3[48];
+        snprintf(st0,sizeof(st0),"Frames %u",fr);
+        snprintf(st1,sizeof(st1),"Contexts %u",ct);
+        snprintf(st2,sizeof(st2),"Draw records %u",dr);
+        snprintf(st3,sizeof(st3),"Dropped %u",dp);
+        const char* stats[4]={st0,st1,st2,st3};
         float avail=ImGui::GetContentRegionAvail().x; float x=0.f; bool same=false;
         for(int i=0;i<4;++i){ float wds=TextW(stats[i]); if(x+wds+16*Unit()>avail){ x=0.f; same=false; }
           if(same){ ImGui::SameLine(0,18*Unit()); }
@@ -681,13 +699,31 @@ void reshade::runtime::draw_gui_chams(){
       Divider();
       // dump rows: checkbox + hint (wrapped) + action on its own line
       if(CheckRow("Dump mode",&s.dump,"Write draw info to ReShade.log · 2,000 lines / activation")) chams::save();
+      // where the recorded session actually is
+      { const char* dir=chams::capture_session_path();
+        if(dir && dir[0]){
+          ImGui::TextDisabled("Recording to:");
+          ImGui::PushStyleColor(ImGuiCol_Text,kMuted);
+          ImGui::TextWrapped("%s",dir);
+          ImGui::PopStyleColor();
+        } else {
+          WrapText(kMuted,"Nothing recorded yet. Start tracking and draw a few frames.",ImGui::GetContentRegionAvail().x);
+        } }
       { float avail=ImGui::GetContentRegionAvail().x; float bw=TextW("Copy dump path")+24*Unit();
         ImGui::SetCursorPosX(std::max(0.f,avail-bw));
         if(ImGui::Button("Copy dump path",ImVec2(bw,0))){
           ImGui::SetClipboardText(chams::dump_path());
         } }
+      { float avail=ImGui::GetContentRegionAvail().x; float bw=TextW("Copy capture path")+24*Unit();
+        if(avail > bw+8*Unit()){
+          ImGui::SameLine();
+          if(ImGui::Button("Copy capture path",ImVec2(bw,0))){
+            const char* dir=chams::capture_session_path();
+            ImGui::SetClipboardText((dir && dir[0]) ? dir : "(no capture session)");
+          }
+        } }
       if(CheckRow("Dump ALL draws",&s.dump_all,"Find missing pieces · log every draw, 3,000 records")) chams::save();
-      ImGui::TextDisabled("Diagnostics are written to %TEMP%\\chams-dump.txt");
+      ImGui::TextDisabled("Dump text: %TEMP%\\chams-dump.txt · capture tree: %TEMP%\\capture\\session-*");
       ImGui::EndChild(); ImGui::PopStyleVar(4); ImGui::PopStyleColor(1);
     }
     ImGui::SetCursorScreenPos(ImVec2(cur.x,ImGui::GetCursorScreenPos().y));

@@ -189,6 +189,14 @@ namespace reshade::chams
 	// live radar marks (stage 110): published by the draw unit, read by the menu
 	extern std::atomic<unsigned> g_radar_bodies;
 	unsigned radar_marks_now();
+	// Runtime capture (stage 115): the panel's tracking switch, wired to the
+	// recorder that already existed. Records GL call metadata only -- no memory
+	// contents, no screenshots, no game paths, no credentials.
+	bool capture_session_start();
+	void capture_session_stop();
+	unsigned capture_is_active();
+	void capture_counters(unsigned *frames, unsigned *contexts, unsigned *draws, unsigned *dropped);
+	const char *capture_session_path();
 	void load();
 	void ensure_loaded();  // apply saved settings before the first chams draw
 	void save();
