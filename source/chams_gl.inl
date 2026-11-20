@@ -174,6 +174,15 @@ namespace reshade::chams
 		int   frame_obs_n   = 0;
 		float cand      = -1.0f;  // candidate distance being confirmed
 		float own_est   = -1.0f;  // learned distance of my own model (-1 = unknown)
+		// Stage 117: the own model is not a fixed distance away. Measured from
+		// ownflicking6B: the own body's draws span 1.70 m .. 3.03 m within one
+		// session (aim, weapon raise/lower, walking, camera recomposure), while the
+		// hide gate only accepted +-0.2 m. Every drift past the band un-hid the
+		// avatar, reset 'stable' to 0, and cost another 30 frames of visibility --
+		// that is the flicker. These two numbers learn the real spread so the gate
+		// grows to fit the body instead of pretending it is static.
+		float own_band   = 0.55f;  // running half-width of the observed span
+		float own_lo     = 0.0f, own_hi = 0.0f;   // observed min / max distance
 		int   stable    = 0;      // consecutive frames the candidate held
 		// Consecutive frames with no corroborated observation. A temporary
 		// zero-observation frame (own avatar culled) must not destroy a valid
@@ -276,7 +285,10 @@ namespace reshade::chams
 	// still require stale_frames == 0. Replay-validated on the real-device
 	// capture: transitions unchanged (132), single-direct runs 11 -> 6, 31
 	// visible draws removed. K = 2 is identical to K = 1, so 1 is minimal.
-	constexpr int kHystMaxStale = 1;
+	// Stage 117: 1 was too tight. An own part that misses one frame of
+	// corroboration un-latched and flashed visible. Three frames of tolerance is
+	// still far below kStaleFrameLimit (30), so spectate safety is unchanged.
+	constexpr int kHystMaxStale = 3;
 
 	struct own_fork_fp {
 		int program = 0, array_buffer = 0, element_buffer = 0, count = 0, texture = 0;
@@ -410,9 +422,13 @@ namespace reshade::chams
 	// gate, so the stale tolerance is not a global widening.
 	inline bool own_hyst_gate(const settings &s, const program_info &p, float distance, const own_track &o)
 	{
+		// Release band is the learned span plus a margin: once a part is latched
+		// hidden it stays hidden while the body keeps moving within its normal
+		// range, instead of un-hiding and re-hiding every few frames.
 		return s.hide_own && std::strcmp(p.dist_source, "MATRIX_VP") != 0 && distance >= 0.0f &&
 			o.own_est > 0.0f && o.stable >= 30 && o.stale_frames <= kHystMaxStale &&
-			distance < s.own_distance && std::fabs(distance - o.own_est) <= kHystReleaseBand;
+			distance < s.own_distance &&
+			std::fabs(distance - o.own_est) <= (std::max(kHystReleaseBand, o.own_band) + 0.25f);
 	}
 
 	// Hide gate for a bound fork: armed tracker AND the own draw span having
@@ -617,9 +633,12 @@ namespace reshade::chams
 	// that a distance match establishes ownership.
 	inline bool own_distance_excludes(const settings &s, const program_info &p, float distance, const own_track &o)
 	{
+		// Stage 117: the tolerance is the learned half-width, not a fixed 0.2 m.
+		// A hard 0.2 m band is narrower than the own model's own spread, so it
+		// rejected the player's body whenever they aimed, walked or raised a weapon.
 		return s.hide_own && std::strcmp(p.dist_source, "MATRIX_VP") != 0 && distance >= 0.0f &&
 			o.own_est > 0.0f && o.stable >= 30 && o.stale_frames == 0 && distance < s.own_distance &&
-			std::fabs(distance - o.own_est) <= 0.2f;
+			std::fabs(distance - o.own_est) <= o.own_band;
 	}
 
 	// Pick this frame's own-character observation from the multipart histogram.
@@ -788,6 +807,12 @@ namespace reshade::chams
 			// candidate.
 			o.cand = observation;
 			o.own_est = observation;
+			if (observation > 0.5f) {
+				if (o.own_lo <= 0.0f || observation < o.own_lo) o.own_lo = observation;
+				if (observation > o.own_hi) o.own_hi = observation;
+				const float half = 0.5f * (o.own_hi - o.own_lo) + 0.25f;
+				o.own_band = std::min(std::max(0.55f, half), 1.20f);
+			}
 			o.stale_frames = 0;
 			o.no_info_streak = 0;
 			o.rebase_modal = -1.0f;
@@ -810,8 +835,19 @@ namespace reshade::chams
 			}
 			// Only accept consecutive plausible observations. This distance is
 			// still a heuristic and cannot establish player ownership.
-			if (o.stable >= 30)
+			// Stage 117: arm after 12 corroborated frames instead of 30. Thirty
+			// frames (~0.5 s) is half a second of your own body drawn highlighted
+			// every time the estimate re-anchors.
+			if (o.stable >= 12)
 				o.own_est = o.cand;
+			// widen the learned span to include this observation. Bounded so a
+			// runaway value cannot swallow the whole 1.5-5 m own range.
+			if (observation > 0.5f) {
+				if (o.own_lo <= 0.0f || observation < o.own_lo) o.own_lo = observation;
+				if (observation > o.own_hi) o.own_hi = observation;
+				const float half = 0.5f * (o.own_hi - o.own_lo) + 0.25f;
+				o.own_band = std::min(std::max(0.55f, half), 1.20f);
+			}
 			o.stale_frames = 0;
 			o.no_info_streak = 0;
 		}
