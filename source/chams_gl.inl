@@ -2119,8 +2119,13 @@ namespace reshade::chams
 			if (cache.entries[i].context == context && cache.entries[i].program == program) return cache.entries[i];
 		auto &p = cache.entries[cache.used++ % 128]; p = capture_program_metadata{};
 		p.context = context; p.program = program; p.epoch = epoch;
-		for (size_t i = 0; i < sizeof(k_chara_tokens)/sizeof(k_chara_tokens[0]); ++i)
-			if (gl.GetUniformLocation(program, k_chara_tokens[i]) != -1) p.tokens |= (1 << i);
+		// token bits feed the diagnostics dump only; report strong and weak
+		// families separately so the dump shows which rule accepted a program
+		for (size_t i = 0; i < sizeof(k_chara_tokens_strong)/sizeof(k_chara_tokens_strong[0]); ++i)
+			if (gl.GetUniformLocation(program, k_chara_tokens_strong[i]) != -1) p.tokens |= (1 << i);
+		if (gl.GetUniformLocation(program, k_chara_support) != -1) p.tokens |= (1 << 8);
+		for (size_t i = 0; i < sizeof(k_chara_tokens_weak)/sizeof(k_chara_tokens_weak[0]); ++i)
+			if (gl.GetUniformLocation(program, k_chara_tokens_weak[i]) != -1) p.tokens |= (1 << (9 + i));
 		for (size_t i = 0; i < sizeof(k_skin_uniforms)/sizeof(k_skin_uniforms[0]); ++i)
 			if (gl.GetUniformLocation(program, k_skin_uniforms[i]) != -1) p.skin |= (1 << i);
 		if (gl.GetUniformLocation(program, "_FakeDepth_Ground") != -1) p.wall |= 1;
