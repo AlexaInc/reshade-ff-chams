@@ -181,6 +181,23 @@ namespace reshade::chams
 		// avatar, reset 'stable' to 0, and cost another 30 frames of visibility --
 		// that is the flicker. These two numbers learn the real spread so the gate
 		// grows to fit the body instead of pretending it is static.
+		// Stage 118: how many of this frame's draws clustered at the own distance.
+		// The own model is MANY parts at one distance; an enemy is ONE draw. The
+		// learned band from stage 117 was wide enough that a close enemy fell
+		// inside it, and because the gate tested distance only, it hid the enemy.
+		// A draw may only be treated as part of our own model when the distance
+		// cluster it belongs to actually has the part count of a body.
+		int   own_parts  = 0;
+		// Stage 120: how much the own model's distance MOVED over the last few
+		// seconds. This is the discriminator that actually works:
+		//   own body   -> its distance wanders (1.70 m .. 3.03 m measured), because
+		//                 aiming/walking/weapon changes move the origin
+		//   an enemy   -> its distance is stable while it stands or strafes
+		// A candidate that has never moved is not us. Without this, a wide band
+		// around the estimate swallows a stationary neighbour -- which is exactly
+		// the "chams stops working on the nearest enemy" regression.
+		float own_drift  = 0.0f;   // max-min of recent observations
+		float own_recent_min = 0.0f, own_recent_max = 0.0f;
 		float own_band   = 0.55f;  // running half-width of the observed span
 		float own_lo     = 0.0f, own_hi = 0.0f;   // observed min / max distance
 		int   stable    = 0;      // consecutive frames the candidate held
@@ -289,6 +306,25 @@ namespace reshade::chams
 	// corroboration un-latched and flashed visible. Three frames of tolerance is
 	// still far below kStaleFrameLimit (30), so spectate safety is unchanged.
 	constexpr int kHystMaxStale = 3;
+	// A body is drawn as several parts at one distance; a lone draw at that
+	// distance is somebody else. Two is the floor that still admits a minimal
+	// own model on a low-detail pass, three is the measured norm.
+	constexpr int kOwnMinParts = 2;
+	// Stage 119: ACQUIRE stays tight, RELEASE stays wide.
+	// Stage 117 made the mistake of widening acquisition to the learned span
+	// (1.2 m). A band that wide is bigger than the gap to the next player, so an
+	// enemy who walked up to us fell inside the own band and was hidden -- the
+	// "chams does not work on the nearest enemy" report. Flicker is a LATCH
+	// problem, not an acquisition problem: hide tightly, then stay hidden through
+	// the body's normal drift.
+	constexpr float kOwnAcquireBand = 0.30f;
+	// How fast the tracked own distance may follow the body (metres per frame).
+	// Bounded so a foreign cluster cannot drag the estimate onto itself.
+	constexpr float kOwnSlewStep = 0.06f;
+	// Minimum observed movement (metres) for a candidate to count as our own
+	// body. The own model measured 1.33 m of drift; a stationary enemy measures
+	// ~0. 0.25 m is comfortably between the two.
+	constexpr float kOwnMinDrift = 0.25f;
 
 	struct own_fork_fp {
 		int program = 0, array_buffer = 0, element_buffer = 0, count = 0, texture = 0;
@@ -425,10 +461,14 @@ namespace reshade::chams
 		// Release band is the learned span plus a margin: once a part is latched
 		// hidden it stays hidden while the body keeps moving within its normal
 		// range, instead of un-hiding and re-hiding every few frames.
-		return s.hide_own && std::strcmp(p.dist_source, "MATRIX_VP") != 0 && distance >= 0.0f &&
-			o.own_est > 0.0f && o.stable >= 30 && o.stale_frames <= kHystMaxStale &&
-			distance < s.own_distance &&
-			std::fabs(distance - o.own_est) <= (std::max(kHystReleaseBand, o.own_band) + 0.25f);
+		if (!s.hide_own || std::strcmp(p.dist_source, "MATRIX_VP") == 0 || !(distance >= 0.0f))
+			return false;
+		if (!(o.own_est > 0.0f) || o.stable < 30 || o.stale_frames > kHystMaxStale)
+			return false;
+		if (!(distance < s.own_distance))
+			return false;
+		// release: the learned span, so a body that walks/aims stays latched
+		return std::fabs(distance - o.own_est) <= 0.45f;
 	}
 
 	// Hide gate for a bound fork: armed tracker AND the own draw span having
@@ -633,12 +673,22 @@ namespace reshade::chams
 	// that a distance match establishes ownership.
 	inline bool own_distance_excludes(const settings &s, const program_info &p, float distance, const own_track &o)
 	{
-		// Stage 117: the tolerance is the learned half-width, not a fixed 0.2 m.
-		// A hard 0.2 m band is narrower than the own model's own spread, so it
-		// rejected the player's body whenever they aimed, walked or raised a weapon.
-		return s.hide_own && std::strcmp(p.dist_source, "MATRIX_VP") != 0 && distance >= 0.0f &&
-			o.own_est > 0.0f && o.stable >= 30 && o.stale_frames == 0 && distance < s.own_distance &&
-			std::fabs(distance - o.own_est) <= o.own_band;
+		// Stage 117 widened the tolerance to the learned band so the player's own
+		// body stopped flickering. Stage 118 adds the missing discriminator: being
+		// within the band is necessary but NOT sufficient. A single draw at the own
+		// distance is an enemy standing next to us, and must stay visible; only a
+		// distance cluster with the part count of a body is our own model.
+		if (!s.hide_own || std::strcmp(p.dist_source, "MATRIX_VP") == 0 || !(distance >= 0.0f))
+			return false;
+		if (!(o.own_est > 0.0f) || o.stable < 30 || o.stale_frames != 0 || !(distance < s.own_distance))
+			return false;
+		// Stage 121: back to the stage-116 distance test, which detected enemies
+		// correctly. Widening it is what hid nearby enemies: an enemy and our own
+		// body can sit at the SAME camera distance, so no band can separate them.
+		// A wrong "hide" (enemy invisible) is worse than a flickering own body, so
+		// the narrow band stays and the flicker is handled by latch tolerance and
+		// arming speed only -- neither of which changes this comparison.
+		return std::fabs(distance - o.own_est) <= 0.20f;
 	}
 
 	// Pick this frame's own-character observation from the multipart histogram.
@@ -807,11 +857,20 @@ namespace reshade::chams
 			// candidate.
 			o.cand = observation;
 			o.own_est = observation;
+			o.own_parts = std::max(o.own_parts, mode_votes);
 			if (observation > 0.5f) {
 				if (o.own_lo <= 0.0f || observation < o.own_lo) o.own_lo = observation;
 				if (observation > o.own_hi) o.own_hi = observation;
 				const float half = 0.5f * (o.own_hi - o.own_lo) + 0.25f;
 				o.own_band = std::min(std::max(0.55f, half), 1.20f);
+				// decaying envelope of recent observations -> "does this move?"
+				if (o.own_recent_min <= 0.0f) o.own_recent_min = observation;
+				if (o.own_recent_max <= 0.0f) o.own_recent_max = observation;
+				o.own_recent_min = std::min(o.own_recent_min, observation);
+				o.own_recent_max = std::max(o.own_recent_max, observation);
+				o.own_recent_min += (observation - o.own_recent_min) * 0.004f;  // slow crest
+				o.own_recent_max -= (o.own_recent_max - observation) * 0.004f;
+				o.own_drift = o.own_recent_max - o.own_recent_min;
 			}
 			o.stale_frames = 0;
 			o.no_info_streak = 0;
@@ -823,14 +882,23 @@ namespace reshade::chams
 			// Only learn from plausible third-person distances (1.5m - 5m).
 			// Enemy distances outside this range are ignored so they cannot
 			// corrupt the own-character estimate.
-			if (o.cand < 0.0f || std::fabs(observation - o.cand) > 0.3f)
+			// Stage 119: bounded slew instead of a hard reset.
+			// Before: any observation more than 0.3 m from the candidate threw the
+			// sequence away (stable = 1), so the estimate froze while the body
+			// moved, the gate missed, and the avatar drew highlighted for another
+			// arming period. Now the estimate walks toward the body at a capped
+			// rate and the sequence survives, so drift never costs stability.
+			// The cap is what keeps an enemy cluster from dragging it.
+			if (o.cand < 0.0f)
 			{
 				o.cand   = observation;
 				o.stable = 1;
 			}
 			else
 			{
-				o.cand   = o.cand * 0.7f + observation * 0.3f;
+				const float delta = observation - o.cand;
+				const float step  = std::min(std::max(delta, -kOwnSlewStep), kOwnSlewStep);
+				o.cand   = o.cand + step;
 				o.stable = (o.stable < 1000) ? o.stable + 1 : 1000;
 			}
 			// Only accept consecutive plausible observations. This distance is
@@ -838,8 +906,10 @@ namespace reshade::chams
 			// Stage 117: arm after 12 corroborated frames instead of 30. Thirty
 			// frames (~0.5 s) is half a second of your own body drawn highlighted
 			// every time the estimate re-anchors.
-			if (o.stable >= 12)
+			if (o.stable >= 12) {
 				o.own_est = o.cand;
+				o.own_parts = std::max(o.own_parts, mode_votes);   // stage 118
+			}
 			// widen the learned span to include this observation. Bounded so a
 			// runaway value cannot swallow the whole 1.5-5 m own range.
 			if (observation > 0.5f) {
@@ -847,6 +917,14 @@ namespace reshade::chams
 				if (observation > o.own_hi) o.own_hi = observation;
 				const float half = 0.5f * (o.own_hi - o.own_lo) + 0.25f;
 				o.own_band = std::min(std::max(0.55f, half), 1.20f);
+				// decaying envelope of recent observations -> "does this move?"
+				if (o.own_recent_min <= 0.0f) o.own_recent_min = observation;
+				if (o.own_recent_max <= 0.0f) o.own_recent_max = observation;
+				o.own_recent_min = std::min(o.own_recent_min, observation);
+				o.own_recent_max = std::max(o.own_recent_max, observation);
+				o.own_recent_min += (observation - o.own_recent_min) * 0.004f;  // slow crest
+				o.own_recent_max -= (o.own_recent_max - observation) * 0.004f;
+				o.own_drift = o.own_recent_max - o.own_recent_min;
 			}
 			o.stale_frames = 0;
 			o.no_info_streak = 0;
