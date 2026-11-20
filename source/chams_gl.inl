@@ -942,12 +942,43 @@ namespace reshade::chams
 	//     _ColorEffectParam      (cloth colour effects)
 	// One match is enough - that is the "wide" rule, and it is why a new skin
 	// or a new cloth shader is picked up without waiting for an update.
-	static const char *const k_chara_tokens[] = {
-		"_CharaLightIntensity",
-		"_BackLightDir", "_BackLightColor",
-		"_SkinBaseColor", "_DiffIntensity",
-		"_SpecularmapGlossA", "_StretchRatio", "_ColorEffectParam"
+	// Stage 116 -- split by measured reliability against real captures.
+	//
+	// STRONG: present on every avatar program in the enemy capture, and on none of
+	// the 15 world programs captured from the horse / sports car / waterfall false
+	// positives. These accept on their own.
+	static const char *const k_chara_tokens_strong[] = {
+		"_CharaLightIntensity",   // 4/4 real avatar programs carried this
+		"_SkinBaseColor",         // skin pass only
+		"_DiffIntensity",
+		"_StretchRatio",          // cloth / hair stretch
+		"_ColorEffectParam"
 	};
+
+	// WEAK: also used by world props. _BackLightDir / _BackLightColor are generic
+	// backlight names, and _SpecularmapGlossA is used by the vehicle paint shader
+	// (captured from sportcar p308 / horse p350). These accept only together with
+	// _AlphaMask, which every avatar program had and no captured prop had.
+	static const char *const k_chara_tokens_weak[] = {
+		"_BackLightDir", "_BackLightColor", "_SpecularmapGlossA"
+	};
+
+	// Props that must never be classified as a body, whatever tokens they carry.
+	// Each signature needs ALL of its entries, so a partial match cannot reject a
+	// real avatar by accident. Measured from the captures:
+	//   water/flow  -- waterfall p351/p382, horse p382   (bright waterfall counted
+	//                  as a player; one pixel lit the whole fall)
+	//   vehicle     -- sportcar p308, horse p350         (car paint read as a body)
+	static const char *const k_prop_water[] = {
+		"_Speed", "_TextureRTiling", "_FresnelColor"
+	};
+	static const char *const k_prop_vehicle[] = {
+		"_CubeTex", "_ReflectionMask", "_ReflectIntensity"
+	};
+
+	// Token that backs up the weak family: avatar passes always carry it, none of
+	// the captured world props did.
+	static const char *const k_chara_support = "_AlphaMask";
 
 	// Skinned meshes always carry one of these; nothing static does. They are
 	// the only way to catch a bundle whose shader family we have never seen.
@@ -969,10 +1000,55 @@ namespace reshade::chams
 	// texture, mesh or VBO. The MToon entries cover Unity's official toon
 	// shader family (_ShadeThreshold / _ShadeColor / _ShadeShift).
 	static const char *const k_cel_tokens[] = {
-		"_ShadowThreshold", "_BrightColor",                  // cel ramp body passes
+		// _BrightColor was removed in stage 116: it is a flowing-water uniform
+		// (waterfall p351/p382 carry it next to _FresnelColor and _Speed), not a
+		// cel ramp. Keeping it here is what put the waterfall on the radar.
+		"_ShadowThreshold",                                  // cel ramp body passes
 		"_ShadeThreshold", "_ShadeColor", "_ShadeShift",    // Unity MToon-style bodies
 		"_OutLineColor", "_OutLineWidth", "_OutLineZOffset" // inverted-hull outline passes
 	};
+
+	inline bool has_all(GLint program, const char *const *names, int count)
+	{
+		if (gl.GetUniformLocation == nullptr)
+			return false;
+		for (int i = 0; i < count; ++i)
+			if (gl.GetUniformLocation(static_cast<GLuint>(program), names[i]) == -1)
+				return false;
+		return true;
+	}
+
+	// A world prop (water, vehicle paint) rather than a body. Checked before any
+	// accept rule, so no token combination can pull one of these back in.
+	inline const char *program_prop_kind(GLint program)
+	{
+		if (gl.GetUniformLocation == nullptr)
+			return nullptr;
+		if (has_all(program, k_prop_water,
+			static_cast<int>(sizeof(k_prop_water) / sizeof(k_prop_water[0]))))
+			return "water";
+		if (has_all(program, k_prop_vehicle,
+			static_cast<int>(sizeof(k_prop_vehicle) / sizeof(k_prop_vehicle[0]))))
+			return "vehicle";
+		return nullptr;
+	}
+
+	// Strong tokens accept alone; weak ones need the support uniform.
+	inline const char *program_chara_token(GLint program)
+	{
+		if (gl.GetUniformLocation == nullptr)
+			return "-";
+		for (const char *name : k_chara_tokens_strong)
+			if (gl.GetUniformLocation(static_cast<GLuint>(program), name) != -1)
+				return name;
+		const bool support = gl.GetUniformLocation(static_cast<GLuint>(program),
+			k_chara_support) != -1;
+		if (support)
+			for (const char *name : k_chara_tokens_weak)
+				if (gl.GetUniformLocation(static_cast<GLuint>(program), name) != -1)
+					return name;
+		return "-";
+	}
 
 	inline bool program_has_cel_token(GLint program)
 	{
@@ -997,12 +1073,10 @@ namespace reshade::chams
 	// which avatar token this program carries (for the dump / for the log)
 	inline const char *character_token(GLint program)
 	{
-		if (gl.GetUniformLocation == nullptr)
-			return "-";
-		for (const char *name : k_chara_tokens)
-			if (gl.GetUniformLocation(static_cast<GLuint>(program), name) != -1)
-				return name;
-		return "-";
+		const char *prop = program_prop_kind(program);
+		if (prop != nullptr)
+			return "-";                       // world prop: reported as no token
+		return program_chara_token(program);
 	}
 
 	inline bool program_is_character(GLint program)
@@ -1015,12 +1089,32 @@ namespace reshade::chams
 			if (c.e[i].program == program && c.e[i].detect_mode == g_settings.detect_mode)
 				return c.e[i].is_character;
 
+		// Stage 116: a world prop is never a body. This runs before every accept
+		// rule, so no token combination can let a waterfall or a car back in.
+		const char *const prop = program_prop_kind(program);
+		if (prop != nullptr)
+		{
+			if (c.count < 32) {
+				c.e[c.count].program = program;
+				c.e[c.count].detect_mode = g_settings.detect_mode;
+				c.e[c.count].is_character = false;
+				++c.count;
+			}
+			static int logged = 0;
+			if (logged < 16) {
+				++logged;
+				reshade::log::message(reshade::log::level::info,
+					"[CHAMS] classifier: program %d rejected as %s prop (stage 116)", program, prop);
+			}
+			return false;
+		}
+
 		const bool has_chara = gl.GetUniformLocation(static_cast<GLuint>(program),
 		                                             k_character_uniform) != -1;
 
 		bool has_wide = has_chara;
 		if (!has_wide)
-			has_wide = character_token(program)[0] != '-';
+			has_wide = program_chara_token(program)[0] != '-';
 		if (!has_wide)
 			has_wide = program_has_cel_token(program);   // Stage 3 FIX B: cel/toon family
 
