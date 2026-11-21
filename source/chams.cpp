@@ -8,6 +8,7 @@
 #include "ini_file.hpp"
 #include "dll_log.hpp"
 #include "chams_config_validation.hpp"
+#include "chams_inprocess_probe.hpp"
 #include <string>
 
 // FPS position string helpers (Stage 97)
@@ -34,6 +35,7 @@ namespace reshade::chams {
 #include <Shlobj.h>    // SHGetFolderPath, CSIDL_APPDATA
 #include <algorithm>
 #include <cstring>
+#include <cstdio>
 #include <cwchar>     // wcscat_s
 #include <mutex>      // call_once
 #include <fstream>
@@ -315,10 +317,44 @@ namespace reshade::chams
 		++g_frame_id;
 	}
 
+	static void run_inprocess_selftest_if_enabled()
+	{
+		if (s_chams_config_path.empty()) return;
+		const auto marker_path = std::filesystem::path(s_chams_config_path).parent_path() / L"memory-selftest.enable";
+		const DWORD attrs = GetFileAttributesW(marker_path.c_str());
+		if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) return;
+
+		const auto r = inprocess_probe::run();
+		char line[256] = {};
+		std::snprintf(line, sizeof(line),
+			"[CHAMS_MEMORY_SELFTEST] pid=%lu host_hd_player=%d marker_ok=%d marker_error=%lu image_ok=%d image_error=%lu",
+			static_cast<unsigned long>(r.pid), r.is_hd_player ? 1 : 0,
+			r.local_marker_ok ? 1 : 0, static_cast<unsigned long>(r.marker_error),
+			r.host_image_header_ok ? 1 : 0, static_cast<unsigned long>(r.image_error));
+		// Use a PID-specific CREATE_NEW file: never truncate the user's existing
+		// chams dump or overwrite a prior diagnostic result.
+		WCHAR path[MAX_PATH] = {};
+		const DWORD len = GetTempPathW(MAX_PATH, path);
+		if (len > 0 && len < MAX_PATH &&
+			_snwprintf_s(path + len, MAX_PATH - len, _TRUNCATE, L"chams-selftest-%lu.txt",
+				static_cast<unsigned long>(r.pid)) >= 0)
+		{
+			HANDLE file = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+				CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+			if (file != INVALID_HANDLE_VALUE)
+			{
+				DWORD written = 0;
+				WriteFile(file, line, static_cast<DWORD>(std::strlen(line)), &written, nullptr);
+				CloseHandle(file);
+			}
+		}
+		reshade::log::message(reshade::log::level::info, "%s", line);
+	}
+
 	void ensure_loaded()
 	{
 		static std::once_flag once;
-		std::call_once(once, [] { load(); });
+		std::call_once(once, [] { load(); run_inprocess_selftest_if_enabled(); });
 	}
 
 	void poll_hotkey()
