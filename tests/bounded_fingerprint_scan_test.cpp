@@ -21,6 +21,13 @@ int main() {
     o.budget = kChunk;
     const auto bounded = scan(o);
     assert(bounded.attempted == kChunk && bounded.matches == 0 && bounded.limit_reached);
+    assert(bounded.next_cursor == o.begin + kChunk - (sizeof(kSignature) - 1));
+    scan_options second = o;
+    second.begin = bounded.next_cursor;
+    second.budget = size;
+    const auto resumed = scan(second);
+    assert(resumed.matches == 2 && resumed.first_match == o.begin + kChunk - 20);
+    assert(resumed.next_cursor == o.end);
     HANDLE cancel = CreateEventW(nullptr, TRUE, TRUE, nullptr);
     assert(cancel);
     o.cancel = cancel;

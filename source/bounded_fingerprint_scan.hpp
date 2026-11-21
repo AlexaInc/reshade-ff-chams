@@ -34,7 +34,7 @@ struct scan_options {
 };
 struct scan_result {
     std::uint64_t attempted = 0, copied = 0, failures = 0, regions = 0, matches = 0;
-    std::uintptr_t first_match = 0;
+    std::uintptr_t first_match = 0, next_cursor = 0;
     bool cancelled = false, limit_reached = false, time_reached = false, allocation_failed = false;
 };
 inline bool readable(const MEMORY_BASIC_INFORMATION &m) noexcept {
@@ -45,12 +45,14 @@ inline bool readable(const MEMORY_BASIC_INFORMATION &m) noexcept {
 }
 inline scan_result scan(const scan_options &o) noexcept {
     scan_result r;
-    if (o.begin >= o.end || !o.budget || !o.timeout_ms) return r;
+    r.next_cursor = o.begin;
+    if (o.begin >= o.end || o.budget < sizeof(kSignature) * 2 || !o.timeout_ms) return r;
     auto *buffer = static_cast<unsigned char *>(VirtualAlloc(nullptr, kChunk + sizeof(kSignature),
                                     MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
     if (!buffer) { r.allocation_failed = true; return r; }
     const ULONGLONG start_time = GetTickCount64();
     std::uintptr_t current = o.begin;
+    std::uintptr_t resume_override = 0;
     while (current < o.end && r.attempted < o.budget) {
         if (o.cancel && WaitForSingleObject(o.cancel, 0) == WAIT_OBJECT_0) { r.cancelled = true; break; }
         if (GetTickCount64() - start_time >= o.timeout_ms) { r.time_reached = true; break; }
@@ -99,12 +101,18 @@ inline scan_result scan(const scan_options &o) noexcept {
                     if (!o.cancel) Sleep(o.pause_ms);
                 }
             }
+            // Overlap the already-read tail when resuming within the same
+            // region, so a signature straddling two slices is not missed.
+            if ((r.time_reached || r.attempted >= o.budget) && current < stop &&
+                tail && current >= tail && current - tail > o.begin)
+                resume_override = current - tail;
             if (r.cancelled || r.time_reached) break;
             if (r.attempted >= o.budget && current < o.end) { r.limit_reached = true; break; }
         }
         current = stop;
     }
     if (r.attempted >= o.budget && current < o.end) r.limit_reached = true;
+    r.next_cursor = resume_override ? resume_override : current;
     VirtualFree(buffer, 0, MEM_RELEASE);
     return r;
 }
