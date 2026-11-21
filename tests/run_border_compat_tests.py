@@ -11,7 +11,7 @@ pre = script[:start]
 pre = pre.replace('std::atomic<unsigned> g_frame_id{1};',
                   'std::atomic<unsigned> g_frame_id{1}; std::atomic<unsigned> g_radar_bodies{0};')
 main = r'''
-struct Call { int depth_func, depth_write, poly, depth_test; int r,g,b,a; };
+struct Call { int depth_func, depth_write, poly, depth_test; int r,g,b,a; float near_depth,far_depth; };
 int main() {
  using namespace reshade::chams;
  g_opengl_context=reinterpret_cast<void *>(1);
@@ -26,13 +26,15 @@ int main() {
   g_budget_left=110;g_overlay_open=false; ++g_frame_id;previous_render_mode()=1;
   en(GL_DEPTH_TEST);dm(1);cm(1,1,1,1);df(GL_LEQUAL);dr(0,1);pm(GL_FRONT_AND_BACK,GL_FILL);up(456);
   auto before=save_state(); std::vector<Call> calls;
-  draw_chams(GL_TRIANGLES,200,[&]{ calls.push_back({ints[GL_DEPTH_FUNC][0],ints[GL_DEPTH_WRITEMASK][0],ints[GL_POLYGON_MODE][0],enabled[GL_DEPTH_TEST],ints[GL_COLOR_WRITEMASK][0],ints[GL_COLOR_WRITEMASK][1],ints[GL_COLOR_WRITEMASK][2],ints[GL_COLOR_WRITEMASK][3]}); });
+  draw_chams(GL_TRIANGLES,200,[&]{ calls.push_back({ints[GL_DEPTH_FUNC][0],ints[GL_DEPTH_WRITEMASK][0],ints[GL_POLYGON_MODE][0],enabled[GL_DEPTH_TEST],ints[GL_COLOR_WRITEMASK][0],ints[GL_COLOR_WRITEMASK][1],ints[GL_COLOR_WRITEMASK][2],ints[GL_COLOR_WRITEMASK][3],floats[GL_DEPTH_RANGE][0],floats[GL_DEPTH_RANGE][1]}); });
   auto after=save_state();
   assert(before.depth_test==after.depth_test && before.depth_mask==after.depth_mask && before.depth_func==after.depth_func);
   assert(before.depth_range[0]==after.depth_range[0] && before.depth_range[1]==after.depth_range[1]);
   assert(before.polygon_mode[0]==after.polygon_mode[0] && before.line_width==after.line_width);
   assert(before.blend==after.blend && before.cull_face==after.cull_face && before.blend_src_rgb==after.blend_src_rgb);
   for(int i=0;i<4;i++)assert(before.color_mask[i]==after.color_mask[i] && before.blend_color[i]==after.blend_color[i]);
+  int seeds=0; for(auto c:calls) if(c.depth_test && c.depth_write && c.depth_func==GL_LEQUAL && !c.r&&!c.g&&!c.b&&!c.a && c.near_depth==1.0f && c.far_depth==0.0f) ++seeds;
+  assert(seeds==((compat&&through&&glow)?1:0));
   std::vector<Call> paint; for(auto c:calls) if(!c.depth_write && c.r&&c.g&&c.b&&c.a)paint.push_back(c);
   return paint;
  };
@@ -54,7 +56,16 @@ int main() {
  float pixel=.8f;
  auto model=[&]{if(enabled[GL_DEPTH_TEST] && ints[GL_DEPTH_WRITEMASK][0]) {float n=floats[GL_DEPTH_RANGE][0],f=floats[GL_DEPTH_RANGE][1];pixel=n+.8f*(f-n);}};
  claim_depth(0,0.0f,GL_ALWAYS,model);assert(pixel==0.0f);restore_depth(model);assert(pixel>.79f && .4f<pixel);
- std::puts("PASS: border-compatible Direct mode actual GL call/state regressions; late wall limitation modeled");
+ // Reference-inspired helper keeps a reversed near value. Model LEQUAL.
+ pixel=.8f; auto before=save_state(); before.depth_test=GL_TRUE;before.depth_mask=GL_TRUE;
+ auto depth_test_model=[&]{float n=floats[GL_DEPTH_RANGE][0],f=floats[GL_DEPTH_RANGE][1];float z=n+.8f*(f-n); if(enabled[GL_DEPTH_TEST] && ints[GL_DEPTH_WRITEMASK][0] && (ints[GL_DEPTH_FUNC][0]==GL_ALWAYS || (ints[GL_DEPTH_FUNC][0]==GL_LEQUAL && z<=pixel)))pixel=z;};
+ assert(border_depth_seed(before,depth_test_model));assert(pixel>.19f && pixel<.21f);assert(!(0.4f<=pixel));
+ // A later nearer wall or non-depth-tested wall can still cover; same for
+ // later character parts: their depth test can be blocked by this seed.
+ assert(0.1f<=pixel); assert(!(0.3f<=pixel));
+ before.depth_mask=GL_FALSE;pixel=.8f;assert(!border_depth_seed(before,depth_test_model) && pixel==.8f);
+ before.depth_test=GL_FALSE;before.depth_mask=GL_TRUE;assert(!border_depth_seed(before,depth_test_model) && pixel==.8f);
+ std::puts("PASS: actual Direct passes, reversed depth seed gates and state restoration; modeled late-wall and later-part limitations");
 }
 '''
 # The upstream mock script builds its generated C++ into `head`; run its setup

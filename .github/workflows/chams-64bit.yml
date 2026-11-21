@@ -12,6 +12,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run border compatibility mock regressions
         run: python3 tests/run_border_compat_tests.py
+      - name: Install Mesa software rendering dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libegl1 libgl1 libgl1-mesa-dri
+      - name: Run Mesa depth-order pixel model
+        run: python3 tests/run_gloo_depth_pixel_tests.py
   build:
     needs: border-mock-tests
     runs-on: windows-latest

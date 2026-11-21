@@ -1,5 +1,7 @@
 # Experimental border-compatible Direct passes
 
+Historical note for commit 87114ea only. The subsequent reversed-depth candidate changes the behavior; see GLOO-REVERSED-DEPTH-EXPERIMENT.md.
+
 Reference analyzed: `https://raw.githubusercontent.com/AlexaInc/TST/refs/heads/main/opengl32.dll.decompiled.c`, SHA-256 `6179128a15803bb40edbbe8ef0fb56f44ff8734c151793e85b91433b354fcbc5`. Decompiled UI label Border Chams maps to `DAT_1803afe7f` and the `glDrawElements` hook at `FUN_180096010`. Its branch uses multiple immediate draws, including a full-triangle draw with depth testing disabled, blending enabled, and a separate `GL_LINES` draw. It does not establish which wall pixels were drawn first and contains no verified Gloo Wall identification. Decompiled symbols and calling conventions are inferred, not source-level proof; this change does not copy the reference's unsafe state handling or entire algorithm.
 
 The opt-in `BorderCompat` setting (default OFF) makes the existing Direct fill hidden pass and wire hidden pass use `GL_ALWAYS` with depth writes disabled when `ThroughWalls` is on. Its intent is to imitate the depth-independent coverage component, using the existing tint/texture passes. Open passes remain in place, state restoration is retained, and Stroke/identity/classification are not changed. `GL_ALWAYS` is not asserted identical to disabled depth testing in every shader/driver case.

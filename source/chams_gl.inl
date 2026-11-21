@@ -1771,6 +1771,26 @@ namespace reshade::chams
 		gl.DepthRange(0.0f, 1.0f);
 	}
 
+	// Experimental border-reference depth seed. This changes depth-buffer
+	// contents intentionally: later depth-tested geometry can be occluded.
+	// Do not force depth writes for a draw that did not originally write them.
+	template <typename F>
+	inline bool border_depth_seed(const saved_state &st, F &&real_draw)
+	{
+		if (!st.depth_test || !st.depth_mask)
+			return false;
+		restore_state(st);
+		gl.Enable(GL_DEPTH_TEST);
+		gl.DepthFunc(GL_LEQUAL);
+		gl.DepthMask(GL_TRUE);
+		gl.DepthRange(1.0f, 0.0f);
+		gl.ColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+		gl.PolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+		gl.Disable(GL_BLEND);
+		real_draw();
+		return true;
+	}
+
 	// ---- WIRE (classic 3D stroke): the same triangles drawn as lines ---------
 	// Own switch, own size, own colours. Independent of the 2D outline above.
 	template <typename F>
@@ -2793,6 +2813,11 @@ namespace reshade::chams
 			if (st.depth_mask)
 				restore_depth(real_draw);
 		}
+
+		// Reference-inspired near-depth seed is intentionally LAST so the legacy
+		// restore does not erase it. It applies only to opted-in Direct fill.
+		if (s.render_mode == 1 && s.through_walls && s.border_compat && want_glow)
+			border_depth_seed(st, real_draw);
 
 		gl.DepthRange(st.depth_range[0], st.depth_range[1]);
 		restore_state(st);
