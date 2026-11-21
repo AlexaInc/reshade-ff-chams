@@ -1,0 +1,40 @@
+name: memory-driver-bootstrap
+on:
+  push:
+    branches: [agent/memory-driver-bootstrap]
+    paths:
+      - 'kernel/identity_probe/**'
+      - '.github/workflows/memory-driver-bootstrap.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - name: Confirm SDK and WDK
+        shell: pwsh
+        run: |
+          $root = "${env:ProgramFiles(x86)}\Windows Kits\10"
+          $header = Join-Path $root 'Include\10.0.26100.0\km\ntddk.h'
+          $lib = Join-Path $root 'Lib\10.0.26100.0\km\x64\ntoskrnl.lib'
+          foreach ($path in @($header, $lib)) { if (-not (Test-Path $path)) { throw "Missing WDK requirement: $path" } }
+      - name: Build unsigned bootstrap (not for deployment)
+        run: msbuild kernel/identity_probe/identity_probe.vcxproj /t:Build /p:Configuration=Release /p:Platform=x64 /p:SignMode=Off /m /v:m
+      - name: Verify artifact
+        shell: pwsh
+        run: |
+          $file = 'kernel/identity_probe/out/x64/Release/identity_probe_bootstrap.sys'
+          if (-not (Test-Path $file)) { throw "Missing expected artifact $file" }
+          $signature = Get-AuthenticodeSignature $file
+          if ($signature.Status -ne 'NotSigned') { throw "Unexpected signing state: $($signature.Status)" }
+          Write-Host 'Unsigned build-only artifact; do not install or load.'
+          Get-FileHash -Algorithm SHA256 $file
+      - uses: actions/upload-artifact@v4
+        with:
+          name: identity-probe-bootstrap-UNSIGNED-DO-NOT-LOAD
+          path: kernel/identity_probe/out/x64/Release/identity_probe_bootstrap.sys
+          if-no-files-found: error
+          retention-days: 7
