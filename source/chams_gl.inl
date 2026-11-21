@@ -2653,16 +2653,9 @@ namespace reshade::chams
 			? std::max(2, static_cast<int>(std::lround(static_cast<float>(s.stroke_through_size) * scale)))
 			: 0;
 
-		// THROUGH WALLS: one switch, no percentage (see claim_depth above).
-		//   ON  -> GL_ALWAYS, depth range 0..0.0: the character is written as the
-		//          nearest thing in the depth buffer, so ANYTHING drawn afterwards
-		//          - the translucent ice wall, the throwable glue wall, a wall
-		//          skin, a container - loses the depth test and cannot paint over
-		//          the chams. This is deterministic: it does not depend on the
-		//          draw order or on detecting the wall shader before the character.
-		//   OFF -> GL_GREATER, depth range 0..0.97: nothing is claimed in the
-		//          open, only where something is already in front of the enemy.
-		// wall_on_screen() is kept only for the log line ("ice wall detected").
+		// Existing depth claim behavior is retained. A real-depth restore removes
+		// its near value from depth-writing mesh pixels before later scene draws.
+		// The wall hint remains diagnostic, not a verified wall identity.
 		const GLfloat claim_high = s.through_walls ? k_claim_near : k_claim_gentle;
 		const GLenum  claim_func = s.through_walls ? GL_ALWAYS : GL_GREATER;
 		(void)wall_on_screen();
@@ -2705,9 +2698,13 @@ namespace reshade::chams
 		if (cap) cap->decision = s.render_mode == 0 ? "direct_overlay_fallback" : "direct";
 		monitor_draw(program, count, index_offset, dist, info->dist_source, "direct", false);
 		// ---- 2. GLOW / HIGHLIGHT: four modes (menu: "Player highlight") -----
-		// Every mode draws the part hidden behind a wall with GL_GREATER and the
+		// Legacy mode draws the part hidden behind a wall with GL_GREATER and the
 		// part in plain sight with GL_LEQUAL, exactly like before. What changes
 		// is HOW the character is painted:
+		// Border-reference inspired compatibility: GL_ALWAYS + depth writes off
+		// aims for depth-independent coverage, similar to the reference.
+		// It also paints open pixels; open passes still run where enabled.
+		const GLenum through_depth = (s.through_walls && s.border_compat) ? GL_ALWAYS : GL_GREATER;
 		if (want_glow)
 		{
 			switch (s.glow_mode)
@@ -2715,20 +2712,20 @@ namespace reshade::chams
 			case settings::glow_cloth_only:
 				// real clothes, no colour at all: you see the enemy's actual
 				// outfit / skin / hair / gun through the wall
-				textured_pass(GL_GREATER, st, real_draw);
+				textured_pass(through_depth, st, real_draw);
 				break;
 
 			case settings::glow_cloth_tint:
 				// real clothes + a light colour laid over them
-				textured_pass(GL_GREATER, st, real_draw);
-				fill_pass(GL_GREATER, s.glow_through_color, s.glow_alpha * 0.45f, real_draw);
+				textured_pass(through_depth, st, real_draw);
+				fill_pass(through_depth, s.glow_through_color, s.glow_alpha * 0.45f, real_draw);
 				if (s.glow_open)
 					fill_pass(GL_LEQUAL, s.glow_open_color, s.glow_alpha * 0.45f, real_draw);
 				break;
 
 			case settings::glow_blend:
 				// texture stays readable, the colour is blended over it
-				blend_fill(GL_GREATER, s.glow_through_color, s.glow_alpha, real_draw);
+				blend_fill(through_depth, s.glow_through_color, s.glow_alpha, real_draw);
 				if (s.glow_open)
 					blend_fill(GL_LEQUAL, s.glow_open_color, s.glow_alpha, real_draw);
 				break;
@@ -2736,7 +2733,7 @@ namespace reshade::chams
 			case settings::glow_solid:
 			default:
 				// classic chams: the whole body filled with the colour
-				fill_pass(GL_GREATER, s.glow_through_color, s.glow_alpha, real_draw);
+				fill_pass(through_depth, s.glow_through_color, s.glow_alpha, real_draw);
 				if (s.glow_open)
 					fill_pass(GL_LEQUAL, s.glow_open_color, s.glow_alpha, real_draw);
 				break;
@@ -2752,7 +2749,7 @@ namespace reshade::chams
 			const GLfloat wire_w = std::max(1.0f, static_cast<float>(s.wire_size) * wscale);
 
 			// part hidden behind geometry drawn earlier
-			wire_pass(GL_GREATER, s.wire_through_color, s.wire_alpha, wire_w, real_draw);
+			wire_pass(through_depth, s.wire_through_color, s.wire_alpha, wire_w, real_draw);
 
 			// part in plain sight
 			if (s.wire_open)
@@ -2786,26 +2783,12 @@ namespace reshade::chams
 				restore_depth(real_draw);
 		}
 
-		// ---- 4. DEPTH CLAIM: "see enemies through walls" --------------------
-		// Automatic, no percentage. Covered-only in normal play; the strong
-		// claim switches itself on while the game's ice wall shader is drawn.
-		// This is what makes the chams and the new outline survive the wall.
+		// ---- 4. Existing depth claim (not a guarantee against late walls) ---
 		if (s.through_walls)
 		{
-			// Always use the nearest claim (0.0, GL_ALWAYS) when through_walls is
-			// on. A glue / ice wall is drawn AFTER the characters and would blend
-			// on top of the chams - writing depth 0.0 for the character means the
-			// wall loses the depth test on every pixel the chams cover. This is
-			// deterministic and does not depend on detecting the wall shader
-			// before the character draw (which can fail when the wall is drawn
-			// after the character in the same frame).
-			//
-			// IMPORTANT: claim_depth writes depth 0.0 for the character, which would
-			// block every draw that comes after it (gun, cloth, hair, ...). So we
-			// immediately restore the real depth. The wall drawn later by the game
-			// still loses the depth test because claim_depth ran between the
-			// character draw and the wall draw - the wall is the NEXT draw after
-			// this draw_chams() returns, and it tests against depth 0.0.
+			// Restoring real depth protects later character parts, but removes the
+			// near claim at unshifted body pixels before subsequent scene draws.
+			// Late walls, including depth-disabled draws, can still cover fill/wire.
 			claim_depth(band_px_through, k_claim_near, GL_ALWAYS, real_draw);
 			if (st.depth_mask)
 				restore_depth(real_draw);

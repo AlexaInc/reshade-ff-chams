@@ -145,7 +145,9 @@ namespace reshade::chams
 		// 0 strict / 1 wide / 2 skinned / 3 all
 		int   detect_mode             = 1;
 		bool  wide_match              = true;   // kept: mode 1 == old wide match
-		bool  through_walls           = true;   // walls / glue wall must not hide the chams
+		bool  through_walls           = true;
+		// Experimental full-coverage passes; off unless explicitly enabled.
+		bool  border_compat           = false;
 		// ---- FPS counter (Stage 97) ----------------------------------------
 		// Default OFF per spec; position selectable four corners; persisted as
 		// ShowFPS (bool) + FPSPosition (string TopLeft/TopRight/BottomLeft/BottomRight)

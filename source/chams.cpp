@@ -419,6 +419,7 @@ namespace reshade::chams
 		config.get("CHAMS", "Dump",               g_settings.dump);
 		config.get("CHAMS", "DumpAll",            g_settings.dump_all);
 		config.get("CHAMS", "ThroughWalls",       g_settings.through_walls);
+		config.get("CHAMS", "BorderCompat",       g_settings.border_compat);
 		config.get("CHAMS", "WideMatch",          g_settings.wide_match);
 
 		config.get("RADAR", "Marks",             g_settings.radar_marks);
@@ -500,6 +501,7 @@ namespace reshade::chams
 		config.set("CHAMS", "Dump",               g_settings.dump);
 		config.set("CHAMS", "DumpAll",            g_settings.dump_all);
 		config.set("CHAMS", "ThroughWalls",       g_settings.through_walls);
+		config.set("CHAMS", "BorderCompat",       g_settings.border_compat);
 		config.set("CHAMS", "WideMatch",          g_settings.wide_match);
 
 		config.set("RADAR", "Marks",             g_settings.radar_marks);

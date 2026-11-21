@@ -6,7 +6,14 @@ on:
 permissions:
   contents: write
 jobs:
+  border-mock-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run border compatibility mock regressions
+        run: python3 tests/run_border_compat_tests.py
   build:
+    needs: border-mock-tests
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

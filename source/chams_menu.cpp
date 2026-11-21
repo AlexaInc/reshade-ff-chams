@@ -756,6 +756,9 @@ void reshade::runtime::draw_gui_chams(){
     Divider();
     Label1("See enemies through walls"); ToggleRight("##through",&s.through_walls);
     WrapText(kMuted,"Includes glue / ice walls. Off: only occluded parts are highlighted.",ImGui::GetContentRegionAvail().x);
+    Label1("Border-compatible fill / wire (experimental)");
+    if(ToggleRight("##bordercompat",&s.border_compat)) chams::save();
+    WrapText(kMuted,"Direct + through walls only: draw fill / wire over all depth. May tint visible parts too; a later wall can still cover them.",ImGui::GetContentRegionAvail().x);
     Divider();
     Label1("Also paint hair / cloth shaders"); ToggleRight("##wide",&s.wide_match);
     WrapText(kMuted,"Wide match uses _BackLightDir instead of _CharaLightIntensity.",ImGui::GetContentRegionAvail().x);
