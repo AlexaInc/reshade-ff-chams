@@ -26,7 +26,7 @@ struct scan_options {
     DWORD pause_ms = 4;
     HANDLE cancel = nullptr;
     HMODULE exclude_module = nullptr;
-    bool private_nocache_only = false;
+    bool private_writecombine_only = false;
 };
 struct scan_result {
     std::uint64_t attempted = 0, copied = 0, failures = 0, regions = 0, matches = 0;
@@ -41,9 +41,9 @@ inline bool readable(const MEMORY_BASIC_INFORMATION &m) noexcept {
 }
 // Target selection is based solely on OS-reported region metadata. It does not
 // establish that any selected allocation backs guest RAM.
-inline bool eligible(const MEMORY_BASIC_INFORMATION &m, bool private_nocache_only) noexcept {
+inline bool eligible(const MEMORY_BASIC_INFORMATION &m, bool private_writecombine_only) noexcept {
     if (!readable(m)) return false;
-    return !private_nocache_only || (m.Type == MEM_PRIVATE && m.Protect == (PAGE_READWRITE | PAGE_NOCACHE));
+    return !private_writecombine_only || (m.Type == MEM_PRIVATE && m.Protect == (PAGE_READWRITE | PAGE_WRITECOMBINE));
 }
 inline scan_result scan(const scan_options &o) noexcept {
     scan_result r;
@@ -71,7 +71,7 @@ inline scan_result scan(const scan_options &o) noexcept {
         const std::uintptr_t region_end = base + mbi.RegionSize;
         if (region_end <= current) break;
         const std::uintptr_t stop = (std::min)(region_end, o.end);
-        if (eligible(mbi, o.private_nocache_only) && mbi.AllocationBase != o.exclude_module && mbi.AllocationBase != buffer && mbi.AllocationBase != signature_region.AllocationBase) {
+        if (eligible(mbi, o.private_writecombine_only) && mbi.AllocationBase != o.exclude_module && mbi.AllocationBase != buffer && mbi.AllocationBase != signature_region.AllocationBase) {
             std::size_t tail = 0;
             while (current < stop && r.attempted < o.budget) {
                 if (o.cancel && WaitForSingleObject(o.cancel, 0) == WAIT_OBJECT_0) { r.cancelled = true; break; }

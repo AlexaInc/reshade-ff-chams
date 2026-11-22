@@ -22,7 +22,7 @@ static void submit(const std::wstring &p,const std::string &payload){std::wstrin
 static std::wstring locate(const std::wstring &dir,const wchar_t *pattern){WIN32_FIND_DATAW data={};HANDLE h=INVALID_HANDLE_VALUE;auto p=dir+L"\\"+pattern;ULONGLONG t=GetTickCount64();while(GetTickCount64()-t<5000){h=FindFirstFileW(p.c_str(),&data);if(h!=INVALID_HANDLE_VALUE)break;Sleep(10);}assert(h!=INVALID_HANDLE_VALUE);FindClose(h);return dir+L"\\"+data.cFileName;}
 int main(){
  WCHAR base[MAX_PATH]={},dir[MAX_PATH]={};DWORD n=GetTempPathW(MAX_PATH,base);assert(n&&n<MAX_PATH);assert(_snwprintf_s(dir,MAX_PATH,_TRUNCATE,L"%sfixture-marker-%lu",base,static_cast<unsigned long>(GetCurrentProcessId()))>=0);assert(CreateDirectoryW(dir,nullptr));assert(SetEnvironmentVariableW(L"TMP",dir));assert(SetEnvironmentVariableW(L"TEMP",dir));
- auto *memory=static_cast<unsigned char*>(VirtualAlloc(nullptr,65536*4,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE));assert(memory);
+ auto *memory=static_cast<unsigned char*>(VirtualAlloc(nullptr,65536*4,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE|PAGE_WRITECOMBINE));assert(memory);
  char first[129]={},second[129]={};for(unsigned i=0;i<64;i++){std::snprintf(first+i*2,3,"%02x",i+1);std::snprintf(second+i*2,3,"%02x",255-i);memory[128+i]=static_cast<unsigned char>(i+1);}
  WCHAR addr[32]={};assert(_snwprintf_s(addr,32,_TRUNCATE,L"%llx",static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(memory)))>=0);assert(SetEnvironmentVariableW(L"ARENA_MARKER_TEST_ADDRESS",addr));
  HMODULE addon=LoadLibraryW(L"MarkerTest.addon64");assert(addon);auto init=fn<bool(*)(HMODULE,HMODULE)>(addon,"AddonInit");auto uninit=fn<void(*)(HMODULE,HMODULE)>(addon,"AddonUninit");assert(init&&uninit&&init(addon,GetModuleHandleW(nullptr))&&registered);

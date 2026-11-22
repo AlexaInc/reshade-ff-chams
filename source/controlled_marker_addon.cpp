@@ -51,7 +51,7 @@ static DWORD WINAPI worker(LPVOID arg) noexcept {
  for(unsigned batch=1;batch<=kMaxBatches;batch++) {
   WCHAR ready[MAX_PATH]={},trigger[MAX_PATH]={},output[MAX_PATH]={};
   if(!path(ready,L"arena-target-marker-ready-%lu-%llu-%u.txt",pid,ctx->token,batch)||!path(trigger,L"arena-target-marker-trigger-%lu-%llu-%u.flag",pid,ctx->token,batch)||!path(output,L"arena-target-marker-result-%lu-%llu-%u.txt",pid,ctx->token,batch))return 1;
-  char msg[256]={};std::snprintf(msg,sizeof(msg),"ready pid=%lu token=%llu batch=%u max_batches=%u begin=0x%llx slices=%u slice_bytes=%llu filter=private_rw_nocache\r\n",static_cast<unsigned long>(pid),static_cast<unsigned long long>(ctx->token),batch,kMaxBatches,static_cast<unsigned long long>(cursor),kSlices,static_cast<unsigned long long>(kBudget));
+  char msg[256]={};std::snprintf(msg,sizeof(msg),"ready pid=%lu token=%llu batch=%u max_batches=%u begin=0x%llx slices=%u slice_bytes=%llu filter=private_rw_writecombine\r\n",static_cast<unsigned long>(pid),static_cast<unsigned long long>(ctx->token),batch,kMaxBatches,static_cast<unsigned long long>(cursor),kSlices,static_cast<unsigned long long>(kBudget));
   if(!write_new(ready,msg)||!wait_file(trigger,ctx->stop))return 2;
   if(batch==1 && !read_marker(trigger,marker)){write_new(output,"[TARGET_GUEST_MARKER] state=finished reason=invalid_marker\r\n");return 3;}
   HANDLE f=CreateFileW(output,GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);if(f==INVALID_HANDLE_VALUE)return 4;
@@ -60,9 +60,7 @@ static DWORD WINAPI worker(LPVOID arg) noexcept {
   const char *reason="slice_limit";
   for(unsigned slice=1;slice<=kSlices;slice++) {
    controlled_marker_scan::scan_options o;o.signature=marker;o.begin=cursor;o.end=end;o.budget=kBudget;o.pause_ms=kChunkPause;o.cancel=ctx->stop;o.exclude_module=ctx->module;
-#ifndef MARKER_TEST
-   o.private_nocache_only=true;
-#endif
+   o.private_writecombine_only=true;
    auto r=controlled_marker_scan::scan(o);char line[512]={};
    std::snprintf(line,sizeof(line),"[TARGET_GUEST_MARKER] batch=%u slice=%u begin=0x%llx next=0x%llx attempted=%llu copied=%llu regions=%llu read_failures=%llu matches=%llu first_host_candidate=0x%llx limit=%d timeout=%d cancelled=%d allocation_failed=%d\r\n",batch,slice,static_cast<unsigned long long>(cursor),static_cast<unsigned long long>(r.next_cursor),static_cast<unsigned long long>(r.attempted),static_cast<unsigned long long>(r.copied),static_cast<unsigned long long>(r.regions),static_cast<unsigned long long>(r.failures),static_cast<unsigned long long>(r.matches),static_cast<unsigned long long>(r.first_match),r.limit_reached?1:0,r.time_reached?1:0,r.cancelled?1:0,r.allocation_failed?1:0);
    if(!append(line)){reason="output_error";break;}
