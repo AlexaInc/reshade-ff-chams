@@ -21,10 +21,19 @@ jobs:
           "$compiler" -std=c++17 -O2 -Wall -Wextra -Werror -static-libstdc++ source/guest_marker.cpp -o GuestMarker-arm64
           file GuestMarker-arm64
           sha256sum GuestMarker-arm64
+          compiler_x86="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android26-clang++"
+          "$compiler_x86" -std=c++17 -O2 -Wall -Wextra -Werror -static-libstdc++ source/guest_marker.cpp -o GuestMarker-x86_64
+          file GuestMarker-x86_64
+          sha256sum GuestMarker-x86_64
       - uses: actions/upload-artifact@v4
         with:
           name: GuestMarker-arm64
           path: GuestMarker-arm64
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GuestMarker-x86_64
+          path: GuestMarker-x86_64
           if-no-files-found: error
   windows:
     runs-on: windows-2022
