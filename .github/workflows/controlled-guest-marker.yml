@@ -1,7 +1,7 @@
 name: targeted-guest-marker
 on:
   push:
-    branches: [agent/guest-marker-targeted]
+    branches: [agent/guest-marker-five]
   workflow_dispatch:
 permissions:
   contents: read
@@ -48,7 +48,7 @@ jobs:
           if errorlevel 1 exit /b %errorlevel%
           controlled_marker_scan_test.exe
           if errorlevel 1 exit /b %errorlevel%
-          cl /nologo /EHsc /std:c++17 /W4 /WX /MT /LD source\controlled_marker_addon.cpp /link /OUT:TargetedMarkerProbe.addon64
+          cl /nologo /EHsc /std:c++17 /W4 /WX /MT /LD source\controlled_marker_addon.cpp /link /OUT:TargetedMarker5Probe.addon64
           if errorlevel 1 exit /b %errorlevel%
           cl /nologo /EHsc /std:c++17 /W4 /WX /MT /LD /DMARKER_TEST source\controlled_marker_addon.cpp /link /OUT:MarkerTest.addon64
           if errorlevel 1 exit /b %errorlevel%
@@ -58,6 +58,6 @@ jobs:
           if errorlevel 1 exit /b %errorlevel%
       - uses: actions/upload-artifact@v4
         with:
-          name: TargetedMarkerProbe-addon
-          path: TargetedMarkerProbe.addon64
+          name: TargetedMarker5Probe-addon
+          path: TargetedMarker5Probe.addon64
           if-no-files-found: error

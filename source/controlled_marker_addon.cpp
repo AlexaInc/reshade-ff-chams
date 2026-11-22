@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <cstdlib>
 extern "C" {
-__declspec(dllexport) const char *NAME = "Targeted Guest Marker Probe";
+__declspec(dllexport) const char *NAME = "Five Batch Guest Marker Probe";
 __declspec(dllexport) const char *DESCRIPTION = "Bounded opt-in synthetic marker search and candidate verification.";
 }
 template<class T> static T api_function(HMODULE m,const char *name) noexcept {FARPROC p=GetProcAddress(m,name);T out=nullptr;static_assert(sizeof(out)==sizeof(p),"pointer size");std::memcpy(&out,&p,sizeof(out));return out;}
@@ -18,7 +18,7 @@ constexpr unsigned kSlices=2; constexpr std::size_t kBudget=65536; constexpr DWO
 #else
 constexpr unsigned kSlices=8; constexpr std::size_t kBudget=64u*1024u*1024u; constexpr DWORD kChunkPause=4,kSlicePause=2000,kPoll=1000;
 #endif
-constexpr unsigned kMaxBatches=4;
+constexpr unsigned kMaxBatches=5;
 static bool path(WCHAR (&out)[MAX_PATH],const WCHAR *fmt,DWORD pid,ULONGLONG token,unsigned index) noexcept {
  DWORD n=GetTempPathW(MAX_PATH,out);return n>0&&n<MAX_PATH&&_snwprintf_s(out+n,MAX_PATH-n,_TRUNCATE,fmt,static_cast<unsigned long>(pid),static_cast<unsigned long long>(token),index)>=0;
 }
@@ -50,7 +50,7 @@ static DWORD WINAPI worker(LPVOID arg) noexcept {
  unsigned char marker[controlled_marker::kSize]={};
  for(unsigned batch=1;batch<=kMaxBatches;batch++) {
   WCHAR ready[MAX_PATH]={},trigger[MAX_PATH]={},output[MAX_PATH]={};
-  if(!path(ready,L"arena-target-marker-ready-%lu-%llu-%u.txt",pid,ctx->token,batch)||!path(trigger,L"arena-target-marker-trigger-%lu-%llu-%u.flag",pid,ctx->token,batch)||!path(output,L"arena-target-marker-result-%lu-%llu-%u.txt",pid,ctx->token,batch))return 1;
+  if(!path(ready,L"arena-target5-marker-ready-%lu-%llu-%u.txt",pid,ctx->token,batch)||!path(trigger,L"arena-target5-marker-trigger-%lu-%llu-%u.flag",pid,ctx->token,batch)||!path(output,L"arena-target5-marker-result-%lu-%llu-%u.txt",pid,ctx->token,batch))return 1;
   char msg[256]={};std::snprintf(msg,sizeof(msg),"ready pid=%lu token=%llu batch=%u max_batches=%u begin=0x%llx slices=%u slice_bytes=%llu filter=private_rw_writecombine\r\n",static_cast<unsigned long>(pid),static_cast<unsigned long long>(ctx->token),batch,kMaxBatches,static_cast<unsigned long long>(cursor),kSlices,static_cast<unsigned long long>(kBudget));
   if(!write_new(ready,msg)||!wait_file(trigger,ctx->stop))return 2;
   if(batch==1 && !read_marker(trigger,marker)){write_new(output,"[TARGET_GUEST_MARKER] state=finished reason=invalid_marker\r\n");return 3;}
@@ -79,7 +79,7 @@ static DWORD WINAPI worker(LPVOID arg) noexcept {
  // explicitly triggered comparisons (baseline, after rotate, after unmap).
  for(unsigned stage=1;stage<=3;stage++) {
   WCHAR ready[MAX_PATH]={},trigger[MAX_PATH]={},out[MAX_PATH]={};
-  if(!path(ready,L"arena-target-marker-verify-ready-%lu-%llu-%u.txt",pid,ctx->token,stage)||!path(trigger,L"arena-target-marker-verify-trigger-%lu-%llu-%u.flag",pid,ctx->token,stage)||!path(out,L"arena-target-marker-verify-result-%lu-%llu-%u.txt",pid,ctx->token,stage))return 7;
+  if(!path(ready,L"arena-target5-marker-verify-ready-%lu-%llu-%u.txt",pid,ctx->token,stage)||!path(trigger,L"arena-target5-marker-verify-trigger-%lu-%llu-%u.flag",pid,ctx->token,stage)||!path(out,L"arena-target5-marker-verify-result-%lu-%llu-%u.txt",pid,ctx->token,stage))return 7;
   char msg[256]={};std::snprintf(msg,sizeof(msg),"ready pid=%lu token=%llu stage=%u candidate=0x%llx\r\n",static_cast<unsigned long>(pid),static_cast<unsigned long long>(ctx->token),stage,static_cast<unsigned long long>(candidate));
   if(!write_new(ready,msg)||!wait_file(trigger,ctx->stop))return 8;
   unsigned char expected[controlled_marker::kSize]={},observed[controlled_marker::kSize]={};
