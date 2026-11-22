@@ -1,0 +1,44 @@
+name: self-pagemap-probe
+on:
+  push:
+    branches: [agent/guest-self-pagemap]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test native guest-owned page probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror source/self_pagemap_probe.cpp -o self_pagemap_linux
+          ./self_pagemap_linux --self-test
+          ./self_pagemap_linux | tee self_pagemap_test.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('self_pagemap_test.txt').read_text()
+          assert 'state=allocated ' in s, s
+          if 'state=read ' in s:
+              assert 'present=1 swapped=0' in s, s
+              assert 'state=unmapped present=0 swapped=0' in s, s
+          else:
+              assert 'state=unavailable ' in s, s
+          print('PASS: own allocation and bounded pagemap lifecycle (or explicit denial)')
+          PY
+      - name: Build Android x86-64 executable with NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          ndk="${ANDROID_NDK_HOME:?Android NDK not found}"
+          compiler="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android26-clang++"
+          "$compiler" -std=c++17 -O2 -Wall -Wextra -Werror -static-libstdc++ source/self_pagemap_probe.cpp -o SelfPagemap-x86_64
+          file SelfPagemap-x86_64
+          sha256sum SelfPagemap-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SelfPagemap-x86_64
+          path: SelfPagemap-x86_64
+          if-no-files-found: error
