@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <cstdlib>
 extern "C" {
-__declspec(dllexport) const char *NAME = "Controlled Guest Marker Probe";
+__declspec(dllexport) const char *NAME = "Targeted Guest Marker Probe";
 __declspec(dllexport) const char *DESCRIPTION = "Bounded opt-in synthetic marker search and candidate verification.";
 }
 template<class T> static T api_function(HMODULE m,const char *name) noexcept {FARPROC p=GetProcAddress(m,name);T out=nullptr;static_assert(sizeof(out)==sizeof(p),"pointer size");std::memcpy(&out,&p,sizeof(out));return out;}
@@ -50,25 +50,28 @@ static DWORD WINAPI worker(LPVOID arg) noexcept {
  unsigned char marker[controlled_marker::kSize]={};
  for(unsigned batch=1;batch<=kMaxBatches;batch++) {
   WCHAR ready[MAX_PATH]={},trigger[MAX_PATH]={},output[MAX_PATH]={};
-  if(!path(ready,L"arena-marker-ready-%lu-%llu-%u.txt",pid,ctx->token,batch)||!path(trigger,L"arena-marker-trigger-%lu-%llu-%u.flag",pid,ctx->token,batch)||!path(output,L"arena-marker-result-%lu-%llu-%u.txt",pid,ctx->token,batch))return 1;
-  char msg[256]={};std::snprintf(msg,sizeof(msg),"ready pid=%lu token=%llu batch=%u max_batches=%u begin=0x%llx slices=%u slice_bytes=%llu\r\n",static_cast<unsigned long>(pid),static_cast<unsigned long long>(ctx->token),batch,kMaxBatches,static_cast<unsigned long long>(cursor),kSlices,static_cast<unsigned long long>(kBudget));
+  if(!path(ready,L"arena-target-marker-ready-%lu-%llu-%u.txt",pid,ctx->token,batch)||!path(trigger,L"arena-target-marker-trigger-%lu-%llu-%u.flag",pid,ctx->token,batch)||!path(output,L"arena-target-marker-result-%lu-%llu-%u.txt",pid,ctx->token,batch))return 1;
+  char msg[256]={};std::snprintf(msg,sizeof(msg),"ready pid=%lu token=%llu batch=%u max_batches=%u begin=0x%llx slices=%u slice_bytes=%llu filter=private_rw_nocache\r\n",static_cast<unsigned long>(pid),static_cast<unsigned long long>(ctx->token),batch,kMaxBatches,static_cast<unsigned long long>(cursor),kSlices,static_cast<unsigned long long>(kBudget));
   if(!write_new(ready,msg)||!wait_file(trigger,ctx->stop))return 2;
-  if(batch==1 && !read_marker(trigger,marker)){write_new(output,"[GUEST_MARKER] state=finished reason=invalid_marker\r\n");return 3;}
+  if(batch==1 && !read_marker(trigger,marker)){write_new(output,"[TARGET_GUEST_MARKER] state=finished reason=invalid_marker\r\n");return 3;}
   HANDLE f=CreateFileW(output,GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);if(f==INVALID_HANDLE_VALUE)return 4;
   auto append=[f](const char *s) noexcept {DWORD n=static_cast<DWORD>(std::strlen(s)),w=0;return WriteFile(f,s,n,&w,nullptr)&&w==n;};
-  std::snprintf(msg,sizeof(msg),"[GUEST_MARKER] state=start batch=%u begin=0x%llx\r\n",batch,static_cast<unsigned long long>(cursor));if(!append(msg)){CloseHandle(f);return 5;}
+  std::snprintf(msg,sizeof(msg),"[TARGET_GUEST_MARKER] state=start batch=%u begin=0x%llx\r\n",batch,static_cast<unsigned long long>(cursor));if(!append(msg)){CloseHandle(f);return 5;}
   const char *reason="slice_limit";
   for(unsigned slice=1;slice<=kSlices;slice++) {
    controlled_marker_scan::scan_options o;o.signature=marker;o.begin=cursor;o.end=end;o.budget=kBudget;o.pause_ms=kChunkPause;o.cancel=ctx->stop;o.exclude_module=ctx->module;
+#ifndef MARKER_TEST
+   o.private_nocache_only=true;
+#endif
    auto r=controlled_marker_scan::scan(o);char line[512]={};
-   std::snprintf(line,sizeof(line),"[GUEST_MARKER] batch=%u slice=%u begin=0x%llx next=0x%llx attempted=%llu copied=%llu regions=%llu read_failures=%llu matches=%llu first_host_candidate=0x%llx limit=%d timeout=%d cancelled=%d allocation_failed=%d\r\n",batch,slice,static_cast<unsigned long long>(cursor),static_cast<unsigned long long>(r.next_cursor),static_cast<unsigned long long>(r.attempted),static_cast<unsigned long long>(r.copied),static_cast<unsigned long long>(r.regions),static_cast<unsigned long long>(r.failures),static_cast<unsigned long long>(r.matches),static_cast<unsigned long long>(r.first_match),r.limit_reached?1:0,r.time_reached?1:0,r.cancelled?1:0,r.allocation_failed?1:0);
+   std::snprintf(line,sizeof(line),"[TARGET_GUEST_MARKER] batch=%u slice=%u begin=0x%llx next=0x%llx attempted=%llu copied=%llu regions=%llu read_failures=%llu matches=%llu first_host_candidate=0x%llx limit=%d timeout=%d cancelled=%d allocation_failed=%d\r\n",batch,slice,static_cast<unsigned long long>(cursor),static_cast<unsigned long long>(r.next_cursor),static_cast<unsigned long long>(r.attempted),static_cast<unsigned long long>(r.copied),static_cast<unsigned long long>(r.regions),static_cast<unsigned long long>(r.failures),static_cast<unsigned long long>(r.matches),static_cast<unsigned long long>(r.first_match),r.limit_reached?1:0,r.time_reached?1:0,r.cancelled?1:0,r.allocation_failed?1:0);
    if(!append(line)){reason="output_error";break;}
    if(r.cancelled){reason="cancelled";break;}if(r.allocation_failed){reason="allocation_failed";break;}
    if(r.matches){candidate=r.first_match;cursor=r.next_cursor;reason="match";break;}
    if(r.next_cursor<=cursor){reason="stalled";break;}cursor=r.next_cursor;if(cursor>=end){reason="range_complete";break;}
    if(slice<kSlices && WaitForSingleObject(ctx->stop,kSlicePause)!=WAIT_TIMEOUT){reason="cancelled";break;}
   }
-  std::snprintf(msg,sizeof(msg),"[GUEST_MARKER] state=finished batch=%u reason=%s next=0x%llx\r\n",batch,reason,static_cast<unsigned long long>(cursor));bool written=append(msg);CloseHandle(f);
+  std::snprintf(msg,sizeof(msg),"[TARGET_GUEST_MARKER] state=finished batch=%u reason=%s next=0x%llx\r\n",batch,reason,static_cast<unsigned long long>(cursor));bool written=append(msg);CloseHandle(f);
   if(!written)return 6;
   if(candidate)break;
   if(std::strcmp(reason,"slice_limit")!=0)return 0;
@@ -78,14 +81,14 @@ static DWORD WINAPI worker(LPVOID arg) noexcept {
  // explicitly triggered comparisons (baseline, after rotate, after unmap).
  for(unsigned stage=1;stage<=3;stage++) {
   WCHAR ready[MAX_PATH]={},trigger[MAX_PATH]={},out[MAX_PATH]={};
-  if(!path(ready,L"arena-marker-verify-ready-%lu-%llu-%u.txt",pid,ctx->token,stage)||!path(trigger,L"arena-marker-verify-trigger-%lu-%llu-%u.flag",pid,ctx->token,stage)||!path(out,L"arena-marker-verify-result-%lu-%llu-%u.txt",pid,ctx->token,stage))return 7;
+  if(!path(ready,L"arena-target-marker-verify-ready-%lu-%llu-%u.txt",pid,ctx->token,stage)||!path(trigger,L"arena-target-marker-verify-trigger-%lu-%llu-%u.flag",pid,ctx->token,stage)||!path(out,L"arena-target-marker-verify-result-%lu-%llu-%u.txt",pid,ctx->token,stage))return 7;
   char msg[256]={};std::snprintf(msg,sizeof(msg),"ready pid=%lu token=%llu stage=%u candidate=0x%llx\r\n",static_cast<unsigned long>(pid),static_cast<unsigned long long>(ctx->token),stage,static_cast<unsigned long long>(candidate));
   if(!write_new(ready,msg)||!wait_file(trigger,ctx->stop))return 8;
   unsigned char expected[controlled_marker::kSize]={},observed[controlled_marker::kSize]={};
-  if(!read_marker(trigger,expected)){write_new(out,"[GUEST_MARKER_VERIFY] invalid_marker\r\n");return 9;}
+  if(!read_marker(trigger,expected)){write_new(out,"[TARGET_GUEST_MARKER_VERIFY] invalid_marker\r\n");return 9;}
   SIZE_T copied=0;BOOL ok=ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void *>(candidate),observed,sizeof(observed),&copied);
   const bool full=ok&&copied==sizeof(observed),old_match=full&&std::memcmp(observed,marker,sizeof(marker))==0,new_match=full&&std::memcmp(observed,expected,sizeof(expected))==0;
-  std::snprintf(msg,sizeof(msg),"[GUEST_MARKER_VERIFY] stage=%u readable=%d copied=%llu initial_match=%d expected_match=%d\r\n",stage,full?1:0,static_cast<unsigned long long>(copied),old_match?1:0,new_match?1:0);
+  std::snprintf(msg,sizeof(msg),"[TARGET_GUEST_MARKER_VERIFY] stage=%u readable=%d copied=%llu initial_match=%d expected_match=%d\r\n",stage,full?1:0,static_cast<unsigned long long>(copied),old_match?1:0,new_match?1:0);
   SecureZeroMemory(expected,sizeof(expected));SecureZeroMemory(observed,sizeof(observed));if(!write_new(out,msg))return 10;
  }
  SecureZeroMemory(marker,sizeof(marker));return 0;
@@ -94,7 +97,7 @@ extern "C" __declspec(dllexport) bool AddonInit(HMODULE addon,HMODULE reshade) {
  if(!addon||!reshade)return false;
  auto reg=api_function<register_fn>(reshade,"ReShadeRegisterAddon");if(!reg||!reg(addon,20))return false;
  if(!g_thread){g_stop=CreateEventW(nullptr,TRUE,FALSE,nullptr);LARGE_INTEGER tick={};QueryPerformanceCounter(&tick);if(g_stop){g_ctx={addon,g_stop,static_cast<ULONGLONG>(tick.QuadPart)};g_thread=CreateThread(nullptr,0,worker,&g_ctx,0,nullptr);if(!g_thread){CloseHandle(g_stop);g_stop=nullptr;}}}
- auto log=api_function<log_fn>(reshade,"ReShadeLogMessage");if(log)log(addon,g_thread?3:1,g_thread?"[GUEST_MARKER] armed; no scan until trigger":"[GUEST_MARKER] worker setup failed");return true;
+ auto log=api_function<log_fn>(reshade,"ReShadeLogMessage");if(log)log(addon,g_thread?3:1,g_thread?"[TARGET_GUEST_MARKER] armed; no scan until trigger":"[TARGET_GUEST_MARKER] worker setup failed");return true;
 }
 extern "C" __declspec(dllexport) void AddonUninit(HMODULE addon,HMODULE reshade) {
  if(g_stop)SetEvent(g_stop);

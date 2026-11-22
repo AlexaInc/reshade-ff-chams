@@ -26,14 +26,14 @@ int main(){
  char first[129]={},second[129]={};for(unsigned i=0;i<64;i++){std::snprintf(first+i*2,3,"%02x",i+1);std::snprintf(second+i*2,3,"%02x",255-i);memory[128+i]=static_cast<unsigned char>(i+1);}
  WCHAR addr[32]={};assert(_snwprintf_s(addr,32,_TRUNCATE,L"%llx",static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(memory)))>=0);assert(SetEnvironmentVariableW(L"ARENA_MARKER_TEST_ADDRESS",addr));
  HMODULE addon=LoadLibraryW(L"MarkerTest.addon64");assert(addon);auto init=fn<bool(*)(HMODULE,HMODULE)>(addon,"AddonInit");auto uninit=fn<void(*)(HMODULE,HMODULE)>(addon,"AddonUninit");assert(init&&uninit&&init(addon,GetModuleHandleW(nullptr))&&registered);
- std::wstring ready=locate(dir,L"arena-marker-ready-*-1.txt");auto pos=ready.find(L"ready-");assert(pos!=std::wstring::npos);std::wstring output=ready;output.replace(pos,6,L"result-");std::wstring trigger=ready;trigger.replace(pos,6,L"trigger-");trigger.replace(trigger.size()-4,4,L".flag");
+ std::wstring ready=locate(dir,L"arena-target-marker-ready-*-1.txt");auto pos=ready.find(L"ready-");assert(pos!=std::wstring::npos);std::wstring output=ready;output.replace(pos,6,L"result-");std::wstring trigger=ready;trigger.replace(pos,6,L"trigger-");trigger.replace(trigger.size()-4,4,L".flag");
  Sleep(100);assert(!exists(output));submit(trigger,first);assert(wait_for(output,"state=finished"));auto r=read_text(output);assert(r.find("reason=match")!=std::string::npos);
  char candidate[64]={};std::snprintf(candidate,sizeof(candidate),"first_host_candidate=0x%llx",static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(memory+128)));assert(r.find(candidate)!=std::string::npos);
  std::vector<std::wstring> cleanup={ready,trigger,output};
  for(unsigned stage=1;stage<=3;stage++){
   if(stage==2)for(unsigned i=0;i<64;i++)memory[128+i]=static_cast<unsigned char>(255-i);
   if(stage==3){assert(VirtualFree(memory,0,MEM_RELEASE));memory=nullptr;}
-  std::wstring pat=L"arena-marker-verify-ready-*-"+std::to_wstring(stage)+L".txt";auto vr=locate(dir,pat.c_str());auto at=vr.find(L"ready-");assert(at!=std::wstring::npos);
+  std::wstring pat=L"arena-target-marker-verify-ready-*-"+std::to_wstring(stage)+L".txt";auto vr=locate(dir,pat.c_str());auto at=vr.find(L"ready-");assert(at!=std::wstring::npos);
   std::wstring vt=vr;vt.replace(at,6,L"trigger-");vt.replace(vt.size()-4,4,L".flag");std::wstring vo=vr;vo.replace(at,6,L"result-");
   submit(vt,stage==1?first:second);assert(wait_for(vo,"expected_match="));auto v=read_text(vo);
   if(stage==1)assert(v.find("initial_match=1 expected_match=1")!=std::string::npos);
